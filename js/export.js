@@ -1,4 +1,4 @@
-import { fmtCN, fmtEN, fmtH, daysBetween, escapeHtml, dataURLToBytes } from './util.js';
+import { fmtCN, fmtEN, fmtH, fmtMin, daysBetween, escapeHtml, dataURLToBytes } from './util.js';
 
 // Loaded only when someone exports to Word, so the app itself stays light.
 const DOCX_URL = 'https://cdn.jsdelivr.net/npm/docx@9.5.1/dist/index.iife.js';
@@ -15,16 +15,20 @@ export const CAT_EN = {
 
 const LABELS = {
   zh: {
-    title: '实习成长日记', plan: '今日计划', diary: '日记', time: '时间复盘', cat: '类别', hours: '小时',
+    title: '实习成长日记', plan: '待办', diary: '日记', time: '时间复盘', cat: '类别', hours: '小时',
+    minutes: fmtMin, spent: m => `用时共 ${fmtMin(m)}`,
     total: h => `共 ${h} 小时`, start: d => `入职日期：${d}`, range: (a, b, n) => `记录范围：${a} 至 ${b}，共 ${n} 天`, day: n => `入职第 ${n} 天`,
   },
   en: {
-    title: 'Internship Growth Diary', plan: 'Plan', diary: 'Diary', time: 'Time review', cat: 'Category', hours: 'Hours',
+    title: 'Internship Growth Diary', plan: 'To-dos', diary: 'Diary', time: 'Time review', cat: 'Category', hours: 'Hours',
+    minutes: m => (m < 60 ? `${m} min` : `${fmtH(m / 60)} h`), spent: m => `Time spent: ${m < 60 ? `${m} min` : `${fmtH(m / 60)} h`}`,
     total: h => `Total: ${h} h`, start: d => `Start date: ${d}`, range: (a, b, n) => `${a} to ${b} · ${n} days`, day: n => `Day ${n}`,
   },
 };
 
 const sumHours = time => time.reduce((s, t) => s + t.h, 0);
+const todoLine = (m, t) => `${t.text}${t.minutes ? `（${m.L.minutes(t.minutes)}）` : ''}`;
+const spentOf = todos => todos.reduce((s, t) => s + (t.minutes || 0), 0);
 
 // One neutral model of the export, rendered three ways below.
 // tr (English only): { entries: Map(date -> { text, todos }), labels: { 中文: English } }
@@ -41,7 +45,7 @@ export function buildModel({ entries, profile, from, to, lang, include, images, 
     const date = en ? fmtEN(e.date) : fmtCN(e.date, true);
     return {
       heading: n > 0 ? `${date} · ${L.day(n)}` : date,
-      todos: include.todos ? e.todos.map((x, i) => ({ text: t?.todos?.[i] || x.text, done: x.done })) : [],
+      todos: include.todos ? e.todos.map((x, i) => ({ text: t?.todos?.[i] || x.text, done: x.done, minutes: include.time && x.done ? x.minutes || 0 : 0 })) : [],
       text: (t ? t.text : e.text || '').trim(),
       images: include.images ? e.images.map(id => images.get(id)).filter(Boolean) : [],
       time: include.time
@@ -58,7 +62,10 @@ export function toMarkdown(m) {
   const out = [`# ${m.title}`, '', ...m.meta.map(x => `${x}  `), '', '---', ''];
   for (const d of m.days) {
     out.push(`## ${d.heading}`, '');
-    if (d.todos.length) out.push(`### ${m.L.plan}`, '', ...d.todos.map(t => `- [${t.done ? 'x' : ' '}] ${t.text}`), '');
+    if (d.todos.length) {
+      out.push(`### ${m.L.plan}`, '', ...d.todos.map(t => `- [${t.done ? 'x' : ' '}] ${todoLine(m, t)}`), '');
+      if (spentOf(d.todos)) out.push(m.L.spent(spentOf(d.todos)), '');
+    }
     if (d.text) out.push(`### ${m.L.diary}`, '', d.text.replace(/\n/g, '  \n'), '');
     for (const img of d.images) out.push(`![](${img.data})`, '');
     if (d.time.length) {
@@ -98,7 +105,8 @@ export async function toDocx(m) {
     children.push(heading(d.heading, HeadingLevel.HEADING_1));
     if (d.todos.length) {
       children.push(heading(m.L.plan, HeadingLevel.HEADING_3));
-      d.todos.forEach(t => children.push(para(`${t.done ? '☑' : '☐'} ${t.text}`)));
+      d.todos.forEach(t => children.push(para(`${t.done ? '☑' : '☐'} ${todoLine(m, t)}`)));
+      if (spentOf(d.todos)) children.push(para(m.L.spent(spentOf(d.todos)), { color: '666666' }));
     }
     if (d.text) {
       children.push(heading(m.L.diary, HeadingLevel.HEADING_3));
@@ -146,7 +154,7 @@ export async function printPDF(m) {
     <hr>
     ${m.days.map(d => `<section class="print-day">
       <h2>${escapeHtml(d.heading)}</h2>
-      ${d.todos.length ? `<h3>${m.L.plan}</h3><ul>${d.todos.map(t => `<li>${t.done ? '☑' : '☐'} ${escapeHtml(t.text)}</li>`).join('')}</ul>` : ''}
+      ${d.todos.length ? `<h3>${m.L.plan}</h3><ul>${d.todos.map(t => `<li>${t.done ? '☑' : '☐'} ${escapeHtml(todoLine(m, t))}</li>`).join('')}</ul>${spentOf(d.todos) ? `<p class="meta">${m.L.spent(spentOf(d.todos))}</p>` : ''}` : ''}
       ${d.text ? `<h3>${m.L.diary}</h3><div class="print-text">${escapeHtml(d.text)}</div>` : ''}
       ${d.images.length ? `<div class="print-imgs">${d.images.map(i => `<img src="${i.data}" alt="">`).join('')}</div>` : ''}
       ${d.time.length ? `<h3>${m.L.time}</h3>

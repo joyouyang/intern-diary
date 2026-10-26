@@ -37,6 +37,12 @@ export const nowHM = () => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 export const fmtH = h => (Number.isInteger(h) ? String(h) : h.toFixed(1));
+// 45 → "45 分钟", 90 → "1.5 小时", 110 → "1 小时 50 分钟"
+export function fmtMin(m) {
+  if (m < 60) return `${m} 分钟`;
+  if (m % 30 === 0) return `${fmtH(m / 60)} 小时`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分钟`;
+}
 
 export function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -128,4 +134,5 @@ export function dataURLToBytes(url) {
   return bytes;
 }
 
-export const CAT_COLORS = ['#1F7A5C', '#E8772E', '#3B6FD8', '#9B5BD1', '#D14B6A', '#C99A18', '#2A9BB0', '#7A807C', '#5C8A2E', '#B5651D', '#4E5BA6', '#A23E8C'];
+// Soft sea-and-sky tones first, then gentle warm ones for the rest.
+export const CAT_COLORS = ['#2E8B9A', '#6CC0C2', '#8EC3EE', '#F2B36B', '#E98D8D', '#A99BE0', '#7FB0D8', '#B9C77C', '#B8C2C8', '#E6A3C6', '#D9B97A', '#9AA6E6'];

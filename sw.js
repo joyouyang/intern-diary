@@ -1,5 +1,5 @@
 // Network first, cache as fallback: always the latest version when online, still opens offline.
-const CACHE = 'intern-diary-v1';
+const CACHE = 'intern-diary-v3';
 const SHELL = [
   './',
   'index.html',
@@ -12,11 +12,14 @@ const SHELL = [
   'js/export.js',
   'js/ai.js',
   'js/reminder.js',
+  'js/plaza.js',
+  'js/config.js',
+  'js/sound.js',
   'manifest.webmanifest',
   'icons/icon.svg',
   'icons/icon-192.png',
 ];
-// Libraries loaded on demand (Word export, Claude SDK) are cached after their first use.
+// Libraries loaded on demand (Word export, Claude SDK) come from jsDelivr and are cached after their first use.
 const CDN = 'cdn.jsdelivr.net';
 
 self.addEventListener('install', event => {
@@ -37,8 +40,11 @@ self.addEventListener('fetch', event => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin && url.hostname !== CDN) return;
+  // The app's own files are always revalidated, so after an update the browser never mixes
+  // a new module with a stale one from its HTTP cache. CDN files are versioned, so they can stay cached.
+  const own = url.origin === self.location.origin;
   event.respondWith(
-    fetch(req)
+    (own ? fetch(req.url, { cache: 'no-cache' }) : fetch(req))
       .then(res => {
         if (res.ok) {
           const copy = res.clone();

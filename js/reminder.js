@@ -9,7 +9,7 @@ export function buildICS({ time, weekdaysOnly, url }) {
   const ymd = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
   const stamp = d.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
   const esc = s => s.replace(/[\\;,]/g, c => '\\' + c).replace(/\n/g, '\\n');
-  const title = esc('写今天的实习成长日记');
+  const title = esc('记录今天的实习日记');
   return [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -23,7 +23,7 @@ export function buildICS({ time, weekdaysOnly, url }) {
     'DURATION:PT10M',
     weekdaysOnly ? 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' : 'RRULE:FREQ=DAILY',
     `SUMMARY:${title}`,
-    `DESCRIPTION:${esc(`花 3 分钟，记下今天做了什么、学到了什么。\n${url}`)}`,
+    `DESCRIPTION:${esc(`花几分钟，记下今天做了什么、学到了什么。\n${url}`)}`,
     `URL:${url}`,
     'BEGIN:VALARM',
     'ACTION:DISPLAY',
@@ -46,11 +46,11 @@ export function startReminderLoop(getInfo) {
     if (info.skipWeekends && isWeekend(today)) return;
     if (nowHM() < info.time || store.get('notified') === today) return;
     store.set('notified', today);
-    const opts = { body: '花 3 分钟，记下今天做了什么、学到了什么。', icon: 'icons/icon-192.png', tag: 'daily-diary' };
+    const opts = { body: '花几分钟，记下今天做了什么、学到了什么。', icon: 'icons/icon-192.png', tag: 'daily-diary' };
     try {
       const reg = await navigator.serviceWorker?.getRegistration();
-      if (reg) await reg.showNotification('写今天的实习日记', opts);
-      else new Notification('写今天的实习日记', opts);
+      if (reg) await reg.showNotification('记录今天的实习日记', opts);
+      else new Notification('记录今天的实习日记', opts);
     } catch { /* notification blocked by the browser */ }
   };
   setInterval(check, 30000);

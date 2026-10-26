@@ -1,26 +1,26 @@
 import { fmtH } from './util.js';
 
-const FONT = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif';
+const FONT = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, sans-serif';
 
-// unlock = longest streak (in days) needed to use the theme.
+// unlock = longest streak (in days) needed to use the theme. Ids are kept from v1 so saved choices still match.
+// bg: three gradient stops from top to bottom.
 export const THEMES = [
-  { id: 'plain', name: '晨白', unlock: 0, bg: ['#FBFAF6', '#ECE8DE'], text: '#1D1F1E', sub: '#6B706C', accent: '#1F7A5C', card: 'rgba(31,122,92,0.08)' },
-  { id: 'mint', name: '薄荷', unlock: 3, bg: ['#E8F7EF', '#BBE3CE'], text: '#12392B', sub: '#3D6656', accent: '#16805B', card: 'rgba(255,255,255,0.62)' },
-  { id: 'dusk', name: '晚霞', unlock: 7, bg: ['#FFE4C9', '#F29E7C'], text: '#3A1C0F', sub: '#7B4631', accent: '#C2412D', card: 'rgba(255,255,255,0.5)', glow: [[920, 180, 560, 'rgba(255,244,214,0.75)']] },
-  { id: 'night', name: '夜航', unlock: 14, bg: ['#22305A', '#0B1124'], text: '#F2F4FF', sub: '#A7B1D8', accent: '#FFC567', card: 'rgba(255,255,255,0.08)', stars: true },
-  { id: 'kraft', name: '牛皮纸', unlock: 21, bg: ['#EADBBD', '#D2B888'], text: '#3A2A12', sub: '#6D5531', accent: '#8C4A12', card: 'rgba(255,255,255,0.38)', grain: 0.07 },
-  { id: 'gold', name: '鎏金', unlock: 30, bg: ['#2C2318', '#110C06'], text: '#F6E6C0', sub: '#BBA374', accent: '#E3B75A', card: 'rgba(227,183,90,0.10)', frame: true },
-  { id: 'aurora', name: '极光', unlock: 100, bg: ['#0A2433', '#1A0E36'], text: '#EEFFF9', sub: '#9ED6CC', accent: '#7BF0C6', card: 'rgba(255,255,255,0.07)', glow: [[180, 300, 640, 'rgba(60,220,170,0.38)'], [940, 760, 620, 'rgba(140,90,255,0.32)']] },
+  { id: 'plain', name: '海雾', unlock: 0, bg: ['#D7E9FA', '#E6F3F0', '#F6F3EC'], ink: '#1F2A33', sub: '#6F7F89', accent: '#2E8B9A' },
+  { id: 'mint', name: '薄荷', unlock: 3, bg: ['#D9F1E6', '#EAF6F0', '#F7F6EF'], ink: '#1E2F2A', sub: '#667A72', accent: '#2F8F74' },
+  { id: 'dusk', name: '晚霞', unlock: 7, bg: ['#FBDCCB', '#F8E8E0', '#F6F2EE'], ink: '#33241D', sub: '#86716A', accent: '#D0704B' },
+  { id: 'night', name: '晴空', unlock: 14, bg: ['#C9E0FA', '#E1EDFB', '#F5F7FB'], ink: '#1C2A3A', sub: '#6C7C8E', accent: '#3A78D6' },
+  { id: 'kraft', name: '深海', unlock: 21, bg: ['#10243A', '#123843', '#0E1C24'], ink: '#E8F0F2', sub: '#8FA3AB', accent: '#5CC2C6', dark: true },
+  { id: 'gold', name: '夜航', unlock: 30, bg: ['#1E2840', '#151D2D', '#0E1520'], ink: '#EDF0F5', sub: '#8A97A8', accent: '#E2B97F', dark: true },
+  { id: 'aurora', name: '极光', unlock: 100, bg: ['#13233A', '#173B44', '#24203B'], ink: '#EEFAF7', sub: '#9CC7C0', accent: '#8FE6CF', dark: true, aurora: true },
 ];
 
-function rng(seed) {
-  return () => {
-    seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// The app's sailboat mark, in a 512 box.
+const BOAT = [
+  ['M268 104C316 168 352 250 372 330L268 330Z', 1],
+  ['M248 150L248 330L150 330C176 262 208 200 248 150Z', 0.82],
+  ['M128 352L384 352C372 398 336 420 296 420L216 420C176 420 140 398 128 352Z', 1],
+];
+const WAVE = 'M104 462C136 446 168 446 200 462S264 478 296 462S360 446 392 462';
 
 function roundRect(g, x, y, w, h, r) {
   g.beginPath();
@@ -32,6 +32,53 @@ function roundRect(g, x, y, w, h, r) {
   g.closePath();
 }
 
+function drawLogo(g, x, y, size) {
+  const grad = g.createLinearGradient(x, y, x + size * 0.3, y + size);
+  grad.addColorStop(0, '#9CCFF2');
+  grad.addColorStop(0.55, '#6CC0C2');
+  grad.addColorStop(1, '#2E8B9A');
+  roundRect(g, x, y, size, size, size * 0.225);
+  g.fillStyle = grad;
+  g.fill();
+  g.save();
+  g.translate(x + size / 2, y + size / 2);
+  g.scale((size / 512) * 0.9, (size / 512) * 0.9);
+  g.translate(-248, -291);
+  g.fillStyle = g.strokeStyle = '#FFFFFF';
+  g.lineJoin = g.lineCap = 'round';
+  g.lineWidth = 12;
+  for (const [d, alpha] of BOAT) {
+    const p = new Path2D(d);
+    g.globalAlpha = alpha;
+    g.fill(p);
+    g.stroke(p);
+  }
+  g.globalAlpha = 0.6;
+  g.stroke(new Path2D(WAVE));
+  g.restore();
+}
+
+// A frosted card: translucent white with a soft shadow on light themes, a faint glass panel on dark ones.
+function glass(g, t, x, y, w, h, r = 36) {
+  g.save();
+  if (!t.dark) {
+    g.shadowColor = 'rgba(60, 100, 140, 0.10)';
+    g.shadowBlur = 40;
+    g.shadowOffsetY = 12;
+  }
+  roundRect(g, x, y, w, h, r);
+  g.fillStyle = t.dark ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.62)';
+  g.fill();
+  g.restore();
+  roundRect(g, x + 1, y + 1, w - 2, h - 2, r);
+  g.strokeStyle = t.dark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.85)';
+  g.lineWidth = 2;
+  g.stroke();
+}
+
+const CJK = '⺀-鿿豈-﫿＀-￯　-〿';
+const TOKEN = new RegExp(`[${CJK}]|[^\\s${CJK}]+|\\s+`, 'g');
+
 function ellipsize(g, s, maxW) {
   if (g.measureText(s).width <= maxW) return s;
   let out = s;
@@ -40,19 +87,14 @@ function ellipsize(g, s, maxW) {
 }
 
 // Chinese breaks between any two characters; Latin words stay whole unless too long for a line.
-const CJK = '⺀-鿿豈-﫿＀-￯　-〿';
-const TOKEN = new RegExp(`[${CJK}]|[^\\s${CJK}]+|\\s+`, 'g');
-
 function wrapLines(g, text, maxW, maxLines) {
   const lines = [];
   for (const para of String(text).split('\n')) {
     let line = '';
     for (const raw of para.match(TOKEN) || []) {
-      const parts = g.measureText(raw).width > maxW ? [...raw] : [raw];
-      for (const tk of parts) {
-        if (!line || g.measureText(line + tk).width <= maxW) {
-          line += tk;
-        } else {
+      for (const tk of g.measureText(raw).width > maxW ? [...raw] : [raw]) {
+        if (!line || g.measureText(line + tk).width <= maxW) line += tk;
+        else {
           lines.push(line.trimEnd());
           line = tk.trimStart();
         }
@@ -68,157 +110,129 @@ function wrapLines(g, text, maxW, maxLines) {
 }
 
 // d: { dateLabel, streak, dayN, role, company, quote, todoDone, todoTotal, time: [{ name, h, color }], totalH }
-export function renderPoster(canvas, d, theme) {
-  const W = 1080, H = 1440, P = 88;
+// Async so callers can await it; the drawing itself happens in one synchronous pass.
+export async function renderPoster(canvas, d, t) {
+  const W = 1080, H = 1440, P = 72, IN = 56;
   canvas.width = W;
   canvas.height = H;
   const g = canvas.getContext('2d');
-
-  const bg = g.createLinearGradient(0, 0, W * 0.4, H);
-  bg.addColorStop(0, theme.bg[0]);
-  bg.addColorStop(1, theme.bg[1]);
-  g.fillStyle = bg;
-  g.fillRect(0, 0, W, H);
-  for (const [x, y, r, c] of theme.glow || []) {
-    const rg = g.createRadialGradient(x, y, 0, x, y, r);
-    rg.addColorStop(0, c);
-    rg.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = rg;
-    g.fillRect(0, 0, W, H);
-  }
-  if (theme.stars) {
-    const rnd = rng(7);
-    g.fillStyle = '#FFFFFF';
-    for (let i = 0; i < 90; i++) {
-      g.globalAlpha = 0.25 + rnd() * 0.6;
-      g.beginPath();
-      g.arc(rnd() * W, rnd() * H * 0.55, 1 + rnd() * 2.2, 0, Math.PI * 2);
-      g.fill();
-    }
-    g.globalAlpha = 1;
-  }
-  if (theme.grain) {
-    const rnd = rng(3);
-    for (let i = 0; i < 6000; i++) {
-      g.fillStyle = rnd() > 0.5 ? '#000' : '#fff';
-      g.globalAlpha = rnd() * theme.grain;
-      g.fillRect(rnd() * W, rnd() * H, 2, 2);
-    }
-    g.globalAlpha = 1;
-  }
-  if (theme.frame) {
-    g.strokeStyle = theme.accent;
-    g.globalAlpha = 0.6;
-    g.lineWidth = 3;
-    g.strokeRect(36, 36, W - 72, H - 72);
-    g.lineWidth = 1.5;
-    g.strokeRect(50, 50, W - 100, H - 100);
-    g.globalAlpha = 1;
-  }
-
   g.textBaseline = 'alphabetic';
   g.textAlign = 'left';
 
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  t.bg.forEach((c, i) => bg.addColorStop(i / (t.bg.length - 1), c));
+  g.fillStyle = bg;
+  g.fillRect(0, 0, W, H);
+  // Soft light in the sky; on the aurora theme, two coloured glows.
+  const glows = t.aurora
+    ? [[220, 260, 560, 'rgba(110,230,200,0.28)'], [900, 760, 600, 'rgba(150,120,255,0.24)']]
+    : [[880, 160, 420, t.dark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.55)']];
+  for (const [x, y, r, c] of glows) {
+    const rg = g.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, c);
+    rg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = rg;
+    g.fillRect(0, 0, W, H);
+  }
+
+  drawLogo(g, P, 64, 72);
+  g.fillStyle = t.ink;
   g.font = `600 32px ${FONT}`;
-  g.fillStyle = theme.sub;
-  g.fillText('实习成长日记', P, 132);
+  g.fillText('实习成长日记', P + 96, 112);
   g.textAlign = 'right';
-  g.font = `500 32px ${FONT}`;
-  g.fillText(d.dateLabel, W - P, 132);
+  g.fillStyle = t.sub;
+  g.font = `500 28px ${FONT}`;
+  g.fillText(d.dateLabel, W - P, 112);
   g.textAlign = 'left';
 
-  g.font = `600 44px ${FONT}`;
-  g.fillStyle = theme.text;
-  g.fillText('连续打卡', P, 270);
-  g.font = `800 280px ${FONT}`;
-  g.fillStyle = theme.accent;
+  const cw = W - 2 * P;
+  // Streak card
+  let y = 184;
+  glass(g, t, P, y, cw, 400);
+  g.fillStyle = t.sub;
+  g.font = `500 34px ${FONT}`;
+  g.fillText('连续打卡', P + IN, y + 92);
+  g.font = `700 250px ${FONT}`;
   const num = String(d.streak);
-  g.fillText(num, P - 12, 530);
   const numW = g.measureText(num).width;
-  g.font = `700 72px ${FONT}`;
-  g.fillStyle = theme.text;
-  g.fillText('天', P - 12 + numW + 16, 530);
+  g.fillStyle = t.accent;
+  g.fillText(num, P + IN - 8, y + 318);
+  g.fillStyle = t.ink;
+  g.font = `600 60px ${FONT}`;
+  g.fillText('天', P + IN + numW + 12, y + 318);
+  const who = [d.dayN > 0 ? `入职第 ${d.dayN} 天` : '', [d.role, d.company].filter(Boolean).join(' · ')].filter(Boolean).join('  ·  ');
+  g.fillStyle = t.sub;
+  g.font = `400 28px ${FONT}`;
+  g.fillText(ellipsize(g, who, cw - 2 * IN), P + IN, y + 366);
+  y += 400 + 32;
 
-  const who = [d.dayN > 0 ? `入职第 ${d.dayN} 天` : '', d.company ? `${d.role} @ ${d.company}` : d.role].filter(Boolean).join(' · ');
-  g.font = `500 36px ${FONT}`;
-  g.fillStyle = theme.sub;
-  g.fillText(ellipsize(g, who, W - 2 * P), P, 610);
-
-  const cardY = 668, cardW = W - 2 * P, padX = 52, lh = 72;
-  g.font = `500 46px ${FONT}`;
-  // Text stops short of the right edge, where the large quote mark sits.
-  const lines = wrapLines(g, d.quote, cardW - padX - 130, 3);
-  const cardH = 110 + (lines.length - 1) * lh + 60;
-  roundRect(g, P, cardY, cardW, cardH, 32);
-  g.fillStyle = theme.card;
+  // Quote card
+  g.font = `400 44px ${FONT}`;
+  const lh = 66;
+  const lines = wrapLines(g, d.quote, cw - 2 * IN - 28, 3);
+  const qh = 76 + lines.length * lh;
+  glass(g, t, P, y, cw, qh);
+  roundRect(g, P + IN - 4, y + 54, 6, lines.length * lh - 16, 3);
+  g.fillStyle = t.accent;
   g.fill();
-  g.save();
-  g.globalAlpha = 0.16;
-  g.fillStyle = theme.accent;
-  g.font = `700 260px Georgia, "Times New Roman", serif`;
-  g.textAlign = 'right';
-  g.fillText('”', P + cardW - 24, cardY + 228);
-  g.restore();
-  g.fillStyle = theme.text;
-  g.font = `500 46px ${FONT}`;
-  lines.forEach((l, i) => g.fillText(l, P + padX, cardY + 104 + i * lh));
+  g.fillStyle = t.ink;
+  lines.forEach((l, i) => g.fillText(l, P + IN + 26, y + 92 + i * lh));
+  y += qh + 32;
 
-  let y = cardY + cardH + 44;
-  const gap = 24, boxW = (cardW - gap) / 2, boxH = 150;
+  // Two stat cards
+  const half = (cw - 24) / 2, sh = 176;
   const stat = (x, label, value, unit) => {
-    roundRect(g, x, y, boxW, boxH, 28);
-    g.fillStyle = theme.card;
-    g.fill();
-    g.fillStyle = theme.sub;
-    g.font = `500 30px ${FONT}`;
-    g.fillText(label, x + 36, y + 54);
-    g.fillStyle = theme.text;
-    g.font = `700 64px ${FONT}`;
-    g.fillText(value, x + 36, y + 124);
+    glass(g, t, x, y, half, sh, 32);
+    g.fillStyle = t.sub;
+    g.font = `500 28px ${FONT}`;
+    g.fillText(label, x + 44, y + 62);
+    g.fillStyle = t.ink;
+    g.font = `700 72px ${FONT}`;
+    g.fillText(value, x + 44, y + 142);
     const vw = g.measureText(value).width;
-    g.fillStyle = theme.sub;
-    g.font = `500 30px ${FONT}`;
-    g.fillText(unit, x + 36 + vw + 12, y + 124);
+    g.fillStyle = t.sub;
+    g.font = `500 28px ${FONT}`;
+    g.fillText(unit, x + 44 + vw + 12, y + 142);
   };
   stat(P, '今日计划', d.todoTotal ? `${d.todoDone}/${d.todoTotal}` : '—', d.todoTotal ? '完成' : '');
-  stat(P + boxW + gap, '时间复盘', d.totalH ? fmtH(d.totalH) : '—', d.totalH ? '小时' : '');
-  y += boxH + 40;
+  stat(P + half + 24, '时间复盘', d.totalH ? fmtH(d.totalH) : '—', d.totalH ? '小时' : '');
+  y += sh + 32;
 
+  // Time split
   if (d.time.length) {
-    const barH = 20;
-    let x = P;
+    glass(g, t, P, y, cw, 150, 32);
+    const bx = P + 44, bw = cw - 88, by = y + 46, bh = 20;
     g.save();
-    roundRect(g, P, y, cardW, barH, 10);
+    roundRect(g, bx, by, bw, bh, 10);
     g.clip();
-    for (const t of d.time) {
-      const w = (cardW * t.h) / d.totalH;
-      g.fillStyle = t.color;
-      g.fillRect(x, y, w, barH);
+    let x = bx;
+    for (const item of d.time) {
+      const w = (bw * item.h) / d.totalH;
+      g.fillStyle = item.color;
+      g.fillRect(x, by, Math.max(w - 3, 2), bh);
       x += w;
     }
     g.restore();
-    let lx = P;
-    const ly = y + 64;
-    g.font = `500 28px ${FONT}`;
-    for (const t of d.time.slice(0, 3)) {
-      const label = `${t.name} ${fmtH(t.h)}h`;
-      const w = 26 + g.measureText(label).width;
-      if (lx + w > W - P) break;
-      g.fillStyle = t.color;
+    let lx = bx;
+    const ly = by + 70;
+    g.font = `400 26px ${FONT}`;
+    for (const item of d.time.slice(0, 3)) {
+      const label = `${item.name} ${fmtH(item.h)}h`;
+      const w = 28 + g.measureText(label).width;
+      if (lx + w > bx + bw) break;
+      g.fillStyle = item.color;
       g.beginPath();
-      g.arc(lx + 9, ly - 10, 9, 0, Math.PI * 2);
+      g.arc(lx + 8, ly - 9, 8, 0, Math.PI * 2);
       g.fill();
-      g.fillStyle = theme.sub;
+      g.fillStyle = t.sub;
       g.fillText(label, lx + 26, ly);
-      lx += w + 36;
+      lx += w + 34;
     }
   }
 
-  g.fillStyle = theme.sub;
-  g.globalAlpha = 0.75;
-  g.font = `400 28px ${FONT}`;
+  g.fillStyle = t.sub;
+  g.font = `400 26px ${FONT}`;
   g.textAlign = 'center';
-  g.fillText('每天记一点，实习结束时就有一整本', W / 2, H - 72);
-  g.globalAlpha = 1;
+  g.fillText('每天记一点，实习结束时就有一整本', W / 2, H - 60);
   g.textAlign = 'left';
 }

@@ -1,50 +1,62 @@
 import * as db from './db.js';
 import {
-  todayStr, parseDate, addDays, daysBetween, shiftMonth, weekdayCN, isWeekend, fmtCN, nowHM, fmtH, pad,
-  escapeHtml, uid, debounce, store, toast, downloadBlob, copyText, compressImage, CAT_COLORS,
+  todayStr, dateStr, parseDate, addDays, daysBetween, weekdayCN, fmtCN, fmtH, pad,
+  escapeHtml, uid, debounce, store, toast, downloadBlob, copyText, fmtMin, CAT_COLORS,
 } from './util.js';
 import { computeStreak, MILESTONES } from './streak.js';
 import { THEMES, renderPoster } from './poster.js';
 import * as exporter from './export.js';
 import * as ai from './ai.js';
+import * as plaza from './plaza.js';
+import { chime, splash } from './sound.js';
 import { buildICS, startReminderLoop } from './reminder.js';
 
-const DEFAULT_CATEGORIES = ['开会', '写文档', '数据分析', '写代码', '沟通对接', '学习', '杂事'];
 const DEFAULT_SETTINGS = {
   reminderTime: '21:00',
   skipWeekends: true,
-  categories: DEFAULT_CATEGORIES,
   posterTheme: 'plain',
   posterShowCompany: false,
+  boatShowCompany: true,
 };
-const MAX_IMAGES = 9;
-const MAX_CATEGORIES = 12;
+// Choices offered when a to-do is ticked off: [minutes, label].
+const DURATIONS = [[15, '15 分钟'], [30, '30 分钟'], [45, '45 分钟'], [60, '1 小时'], [90, '1.5 小时'], [120, '2 小时'], [180, '3 小时'], [240, '半天']];
 
 const state = {
   profile: null,
   settings: { ...DEFAULT_SETTINGS },
   entries: new Map(),
-  view: 'today',
+  view: 'todo',
   date: todayStr(),
   followToday: true,
-  calMonth: todayStr().slice(0, 7),
-  exp: { range: 'week', from: '', to: '', lang: 'zh', images: true, todos: true, time: true },
+  exp: { range: 'week', from: '', to: '', lang: 'zh', images: true, todos: true },
   li: { lang: 'en', mentionCompany: false, text: '' },
+  plaza: { loaded: false, loading: false, error: '', stats: null, mine: [], caught: [], inbox: [] },
 };
 const imageCache = new Map();
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const app = $('#app');
 
-const svg = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const svg = (p, w = 2) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+// iOS-style line icons.
 const ICON = {
-  left: svg('<path d="M15 18l-6-6 6-6"/>'),
-  right: svg('<path d="M9 18l6-6-6-6"/>'),
-  x: svg('<path d="M18 6L6 18M6 6l12 12"/>'),
-  image: svg('<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>'),
-  lock: svg('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
-  flame: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c.6 3.2 2.6 5 4.4 6.9C18 10.6 19 12.4 19 14.6 19 18.7 15.9 22 12 22s-7-3.3-7-7.4c0-2.6 1.3-4.7 3.1-6.2.2 1.9 1 3.2 2.3 3.9C10.2 8.6 10.6 5.1 12 2z"/></svg>',
+  left: svg('<path d="m15 18-6-6 6-6"/>'),
+  right: svg('<path d="m9 18 6-6-6-6"/>'),
+  x: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+  lock: svg('<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>', 2.4),
+  check: svg('<path d="m6 12.5 4 4 8-9"/>', 3),
+  boat: svg('<path d="M2.5 14.5h19l-3.2 4.5H5.7z"/><path d="M7 14.5 12 4.5l5 10"/><path d="M12 4.5v10"/>', 1.8),
+  export: svg('<path d="M12 3v12"/><path d="m7.5 7.5 4.5-4.5 4.5 4.5"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/>', 1.8),
 };
+// Paper boats on a calm sea, for the top of the plaza.
+const SEA_ART = `<svg viewBox="0 0 400 140" preserveAspectRatio="xMidYMid slice">
+  <circle cx="330" cy="38" r="20" fill="#fff" opacity=".55"/>
+  <path d="M0 92c40-10 80-10 120 0s80 10 120 0 80-10 120 0 40 6 40 6v42H0z" fill="#fff" opacity=".35"/>
+  <path d="M0 108c40-8 80-8 120 0s80 8 120 0 80-8 120 0 40 4 40 4v28H0z" fill="#fff" opacity=".5"/>
+  <g fill="#fff"><path d="M118 86h44l-7 9h-30z"/><path d="M128 86 140 64l12 22z" opacity=".85"/></g>
+  <g fill="#fff" opacity=".9"><path d="M250 98h30l-5 6h-20z"/><path d="M257 98l8-15 8 15z" opacity=".85"/></g>
+</svg>`;
 
 /* ---------- Data helpers ---------- */
 
@@ -55,11 +67,23 @@ function ensureEntry(date) {
   return state.entries.get(date);
 }
 const isWritten = e => !!(e && e.text && e.text.trim());
-const sumTime = time => Object.values(time || {}).reduce((a, b) => a + b, 0);
-const hasContent = e => !!e && (isWritten(e) || e.todos.length > 0 || sumTime(e.time) > 0 || e.images.length > 0);
+const legacyHours = time => Object.values(time || {}).reduce((a, b) => a + b, 0);
+const hasContent = e => !!e && (isWritten(e) || e.todos.length > 0 || legacyHours(e.time) > 0 || e.images.length > 0);
 const writtenSet = () => new Set([...state.entries.values()].filter(isWritten).map(e => e.date));
 const streak = asOf => computeStreak(writtenSet(), state.settings, asOf);
-const dayNumber = date => daysBetween(state.profile.startDate, date) + 1;
+const dayNumber = date => (state.profile?.startDate ? daysBetween(state.profile.startDate, date) + 1 : 0);
+const spentMinutes = e => e.todos.reduce((s, t) => s + (t.done && t.minutes ? t.minutes : 0), 0);
+const shortDate = s => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
+
+function relTime(iso) {
+  const t = new Date(iso);
+  const mins = (Date.now() - t) / 60000;
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return `${Math.floor(mins)} 分钟前`;
+  if (mins < 1440) return `${Math.floor(mins / 60)} 小时前`;
+  if (dateStr(t) === addDays(todayStr(), -1)) return '昨天';
+  return `${t.getMonth() + 1}月${t.getDate()}日`;
+}
 
 async function persist(entry) {
   entry.updatedAt = Date.now();
@@ -68,36 +92,17 @@ async function persist(entry) {
 }
 const saveSettings = () => db.setKV('settings', state.settings);
 
-function catColor(c) {
-  const i = state.settings.categories.indexOf(c);
-  if (i >= 0) return CAT_COLORS[i % CAT_COLORS.length];
-  let h = 0;
-  for (const ch of c) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return CAT_COLORS[h % CAT_COLORS.length];
-}
-const catsFor = e => [...state.settings.categories, ...Object.keys(e.time || {}).filter(c => !state.settings.categories.includes(c))];
-
 async function loadImage(id) {
   if (imageCache.has(id)) return imageCache.get(id);
   const img = await db.getImage(id);
   if (img) imageCache.set(id, img);
   return img;
 }
-function hydrateImages(root) {
-  root.querySelectorAll('img[data-img-id]').forEach(async el => {
-    const img = await loadImage(el.dataset.imgId);
-    if (img) el.src = img.data;
-  });
-}
 
-function defaultQuote(text) {
-  const first = (text || '').split(/[。！？!?\n]/).map(s => s.trim()).find(Boolean) || '今天也在认真成长。';
-  return first.length > 60 ? first.slice(0, 60) + '…' : first;
-}
-
-/* ---------- Drafts: the diary text is never lost, even before saving ---------- */
+/* ---------- Drafts: the diary line is never lost, even before saving ---------- */
 
 const draftKey = date => 'draft:' + date;
+const DRAFT_NOTE = '未保存 · 草稿已自动保留';
 function writeDraft(date, value) {
   if (value !== entryOf(date).text) store.set(draftKey(date), value);
   else store.del(draftKey(date));
@@ -110,7 +115,7 @@ function captureDraft() {
 
 /* ---------- Rendering ---------- */
 
-const VIEWS = { today: viewToday, history: viewHistory, streak: viewStreak, export: viewExport, settings: viewSettings };
+const VIEWS = { todo: viewTodo, diary: viewDiary, plaza: viewPlaza, inbox: viewInbox, settings: viewSettings };
 
 function render() {
   captureDraft();
@@ -128,27 +133,45 @@ function render() {
     if (on) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
-  hydrateImages(app);
+  updateBadge();
   const ta = $('#diary-text');
   if (ta) autosize(ta);
+}
+
+function updateBadge() {
+  const badge = $('#tabbar [data-view="inbox"] .badge');
+  const n = state.plaza.stats?.unread || 0;
+  badge.textContent = n > 99 ? '99+' : String(n);
+  badge.hidden = !n;
 }
 
 function go(view) {
   state.view = view;
   render();
   window.scrollTo(0, 0);
+  if (view === 'plaza' || view === 'inbox') refreshPlaza();
 }
 
 function autosize(ta) {
   ta.style.height = 'auto';
-  ta.style.height = Math.max(ta.scrollHeight + 2, 168) + 'px';
+  ta.style.height = Math.max(ta.scrollHeight + 2, 64) + 'px';
 }
+
+function pageHead(title, sub, actions = '') {
+  return `<header class="page-head">
+    <div><h1 class="page-title">${title}</h1>${sub ? `<div class="page-sub">${sub}</div>` : ''}</div>
+    ${actions ? `<div class="head-actions">${actions}</div>` : ''}
+  </header>`;
+}
+const shareButtons = kind => `
+  <button class="icon-btn" data-act="share" data-kind="${kind}" aria-label="分享成纸船">${ICON.boat}</button>
+  <button class="icon-btn" data-act="open-export" aria-label="导出">${ICON.export}</button>`;
 
 function profileFields(p = {}) {
   return `
-    <label class="field"><span>在职公司</span><input name="company" required maxlength="40" placeholder="例如：腾讯" value="${escapeHtml(p.company)}"></label>
-    <label class="field"><span>部门</span><input name="department" maxlength="40" placeholder="例如：微信事业群 · 产品部" value="${escapeHtml(p.department)}"></label>
-    <label class="field"><span>岗位名称</span><input name="role" required maxlength="40" placeholder="例如：产品经理实习生" value="${escapeHtml(p.role)}"></label>
+    <label class="field"><span>在职公司</span><input name="company" required maxlength="40" value="${escapeHtml(p.company)}"></label>
+    <label class="field"><span>部门（选填）</span><input name="department" maxlength="40" value="${escapeHtml(p.department)}"></label>
+    <label class="field"><span>岗位名称</span><input name="role" required maxlength="40" value="${escapeHtml(p.role)}"></label>
     <label class="field"><span>入职日期</span><input name="startDate" type="date" required value="${escapeHtml(p.startDate)}"></label>`;
 }
 
@@ -157,60 +180,18 @@ function viewOnboarding() {
     <div class="brand">
       <img src="icons/icon.svg" alt="" width="64" height="64">
       <h1>实习成长日记</h1>
-      <p>每天 3 分钟，记下做了什么、学到了什么。实习结束时，你会有一整本自己的成长记录。</p>
+      <p>每天列好待办、记一句心情。<br>实习结束时，你会有一整本自己的成长记录。</p>
     </div>
     <form class="card" data-form="profile">
       ${profileFields()}
       <button class="btn primary block" type="submit">开始记录</button>
-      <p class="hint">所有内容只保存在这台设备的浏览器里，不会上传到任何服务器。</p>
+      <p class="hint">待办和日记只保存在这台设备上；只有你主动放进广场的纸船才会被别人看到。</p>
     </form>
-    <label class="btn ghost block">换了手机？从备份恢复<input type="file" accept="application/json,.json" data-change="backup-import" hidden></label>
+    <label class="btn ghost block">已有备份？从备份恢复<input type="file" accept="application/json,.json" data-change="backup-import" hidden></label>
   </div>`;
 }
 
-/* Today */
-
-function viewToday() {
-  const date = state.date;
-  const isToday = date === todayStr();
-  const e = entryOf(date);
-  const n = dayNumber(date);
-  const draft = store.get(draftKey(date));
-  const text = draft ?? e.text;
-  return `
-    <header class="day-head">
-      <button class="icon-btn" data-act="prev-day" aria-label="前一天">${ICON.left}</button>
-      <div class="day-title">
-        <div class="day-date">${fmtCN(date)}${isToday ? '<span class="tag">今天</span>' : ''}</div>
-        <div class="day-sub">${n > 0 ? `入职第 ${n} 天` : '还没到入职日期'}</div>
-      </div>
-      <button class="icon-btn" data-act="next-day" aria-label="后一天" ${isToday ? 'disabled' : ''}>${ICON.right}</button>
-    </header>
-    ${isToday ? streakBanner(e) : '<button class="btn ghost block" data-act="go-today" style="margin:0 0 12px">回到今天</button>'}
-    ${planCard(e)}
-    ${diaryCard(e, text, draft != null && draft !== e.text)}
-    ${timeCard(e)}`;
-}
-
-function streakBanner(e) {
-  const s = streak();
-  const written = isWritten(e);
-  const today = todayStr();
-  let title = s.current ? `连续打卡 ${s.current} 天` : '开始你的第 1 天';
-  let sub = '写下一句话就算打卡';
-  let due = false;
-  if (written) sub = '今天已打卡，明天见';
-  else if (state.settings.skipWeekends && isWeekend(today)) sub = '周末休息，不写也不会断签';
-  else if (nowHM() >= state.settings.reminderTime) {
-    sub = '已经过了提醒时间，今天还没写哦';
-    due = true;
-  } else if (s.current) sub = '今天写下一句话就能续上';
-  if (!s.current && written) title = '连续打卡 1 天';
-  return `<div class="streak-banner ${due ? 'due' : ''}">
-    <span class="flame">${ICON.flame}</span>
-    <div class="txt"><b>${title}</b><span class="sub">${sub}</span></div>
-  </div>`;
-}
+/* 待办 */
 
 function carryCandidates(date) {
   const prev = [...state.entries.values()]
@@ -219,158 +200,528 @@ function carryCandidates(date) {
   return prev ? prev.todos.filter(t => !t.done) : [];
 }
 
-function planCard(e) {
-  const carry = e.todos.length ? [] : carryCandidates(e.date);
-  return `<section class="card">
-    <div class="card-head"><h2>今日计划</h2><span class="muted small">上班前列一下</span></div>
-    ${e.todos.length ? `<ul class="todos">${e.todos.map(t => `
-      <li class="${t.done ? 'done' : ''}">
-        <label><input type="checkbox" data-change="todo-toggle" data-id="${t.id}" ${t.done ? 'checked' : ''}><span>${escapeHtml(t.text)}</span></label>
-        <button class="icon-btn sm" data-act="todo-del" data-id="${t.id}" aria-label="删除这项">${ICON.x}</button>
-      </li>`).join('')}</ul>` : ''}
-    ${carry.length ? `<button class="btn ghost small" data-act="carry-todos">把上次没完成的 ${carry.length} 项带过来</button>` : ''}
-    <form class="inline-form" data-form="add-todo">
-      <input name="text" placeholder="添加一件今天要做的事" maxlength="80" autocomplete="off" enterkeyhint="done">
-      <button class="btn" type="submit">添加</button>
-    </form>
-  </section>`;
+function todoRow(t) {
+  return `<li class="todo ${t.done ? 'done' : ''}">
+    <button class="check ${t.done ? 'on' : ''}" data-act="todo-check" data-id="${t.id}" aria-label="${t.done ? '改回未完成' : '完成'}：${escapeHtml(t.text)}">${ICON.check}</button>
+    <div class="todo-main">
+      <span class="todo-text">${escapeHtml(t.text)}</span>
+      ${t.done ? `<button class="dur ${t.minutes ? '' : 'empty'}" data-act="todo-duration" data-id="${t.id}">${t.minutes ? fmtMin(t.minutes) : '记录用时'}</button>` : ''}
+    </div>
+    <button class="icon-btn sm del" data-act="todo-del" data-id="${t.id}" aria-label="删除">${ICON.x}</button>
+  </li>`;
 }
 
-function diaryCard(e, text, hasDraft) {
-  const written = isWritten(e);
-  return `<section class="card">
-    <div class="card-head">
-      <h2>今日日记${written ? '<span class="tag">已保存</span>' : ''}</h2>
-      ${written ? `<button class="btn small" data-act="open-poster" data-date="${e.date}">打卡海报</button>` : ''}
-    </div>
-    <textarea id="diary-text" data-date="${e.date}" rows="6" placeholder="今天做了什么？学到了什么？卡在哪里？&#10;小提示：写“做了哪类事”，别写项目代号和内部数据。">${escapeHtml(text)}</textarea>
-    <div class="thumbs">
-      ${e.images.map(id => `<div class="thumb">
-        <img data-img-id="${id}" alt="日记图片" data-act="view-img" data-id="${id}">
-        <button class="thumb-del" data-act="img-del" data-id="${id}" aria-label="删除图片">${ICON.x}</button>
-      </div>`).join('')}
-      ${e.images.length < MAX_IMAGES ? `<label class="thumb add" title="添加图片">${ICON.image}<input type="file" accept="image/*" multiple data-change="add-images" hidden aria-label="添加图片"></label>` : ''}
-    </div>
-    <div class="save-row">
-      <span class="muted small" id="draft-state">${hasDraft ? '有未保存的修改（草稿已自动保留）' : ''}</span>
-      <button class="btn primary" id="save-diary" data-act="save-diary" ${text.trim() ? '' : 'disabled'}>${written ? '更新日记' : '保存日记'}</button>
-    </div>
-  </section>`;
-}
-
-function timeCard(e) {
-  const cats = catsFor(e);
-  const total = sumTime(e.time);
+function viewTodo() {
+  const date = state.date;
+  const isToday = date === todayStr();
+  const e = entryOf(date);
+  const n = dayNumber(date);
   const done = e.todos.filter(t => t.done).length;
-  return `<section class="card">
-    <div class="card-head"><h2>时间复盘</h2><span class="muted small">下班后填一下</span></div>
-    ${e.todos.length ? `<p class="plan-sum">今日计划 ${e.todos.length} 项，完成 ${done} 项</p>` : ''}
-    ${total ? `<div class="timebar">${cats.filter(c => e.time[c]).map(c => `<span style="flex:${e.time[c]};background:${catColor(c)}" title="${escapeHtml(c)} ${fmtH(e.time[c])} 小时"></span>`).join('')}</div>` : ''}
-    <ul class="cats">${cats.map(c => {
-      const v = e.time[c] || 0;
-      return `<li>
-        <span class="dot" style="background:${catColor(c)}"></span>
-        <span class="cat-name">${escapeHtml(c)}</span>
-        <div class="stepper">
-          <button class="icon-btn sm" data-act="time-dec" data-cat="${escapeHtml(c)}" ${v ? '' : 'disabled'} aria-label="${escapeHtml(c)}减少半小时">−</button>
-          <span class="val ${v ? '' : 'muted'}">${fmtH(v)}h</span>
-          <button class="icon-btn sm" data-act="time-inc" data-cat="${escapeHtml(c)}" aria-label="${escapeHtml(c)}增加半小时">+</button>
-        </div>
-      </li>`;
-    }).join('')}</ul>
-    <div class="time-total">${total ? `共 ${fmtH(total)} 小时` : '每按一次 + 记半小时'}</div>
-  </section>`;
+  const spent = spentMinutes(e);
+  const carry = e.todos.length ? [] : carryCandidates(date);
+  const sub = `
+    <button class="icon-btn xs" data-act="prev-day" aria-label="前一天">${ICON.left}</button>
+    <span>${fmtCN(date)}</span>
+    <button class="icon-btn xs" data-act="next-day" aria-label="后一天" ${isToday ? 'disabled' : ''}>${ICON.right}</button>`;
+  const progress = [
+    n > 0 ? `入职第 ${n} 天` : '',
+    e.todos.length ? `完成 ${done}/${e.todos.length}` : '',
+    spent ? `用时 ${fmtMin(spent)}` : '',
+  ].filter(Boolean).join(' · ');
+  return `
+    ${pageHead('待办', sub, shareButtons('todo'))}
+    ${isToday ? '' : '<button class="btn ghost small back-today" data-act="go-today">回到今天</button>'}
+    ${progress ? `<p class="progress-line">${progress}</p>` : ''}
+    <section class="card todo-card">
+      ${e.todos.length
+        ? `<ul class="todo-list">${e.todos.map(todoRow).join('')}</ul>`
+        : `<div class="todo-empty"><p>${isToday ? '今天还没有待办' : '这天没有待办'}</p><span>点右下角的 + 添加</span></div>`}
+    </section>
+    ${carry.length ? `<button class="btn ghost block" data-act="carry-todos">带上上次未完成的 ${carry.length} 项</button>` : ''}
+    <button class="fab" data-act="open-add" aria-label="添加待办">${ICON.plus}</button>`;
 }
 
-/* History */
+/* 日记 */
 
-function viewHistory() {
-  const m = state.calMonth;
-  const [y, mo] = m.split('-').map(Number);
+function viewDiary() {
   const today = todayStr();
-  const offset = (new Date(y, mo - 1, 1).getDay() + 6) % 7;
-  const daysIn = new Date(y, mo, 0).getDate();
-  const cells = Array.from({ length: offset }, () => '<span></span>');
-  for (let d = 1; d <= daysIn; d++) {
-    const ds = `${m}-${pad(d)}`;
-    const e = state.entries.get(ds);
-    const cls = [isWritten(e) ? 'written' : hasContent(e) ? 'partial' : '', ds === today ? 'today' : '', ds > today ? 'future' : ''].join(' ');
-    cells.push(`<button class="cal-cell ${cls}" data-act="open-day" data-date="${ds}" ${ds > today ? 'disabled' : ''} aria-label="${fmtCN(ds)}">${d}</button>`);
-  }
-  const monthEntries = [...state.entries.values()].filter(e => e.date.startsWith(m) && hasContent(e)).sort((a, b) => b.date.localeCompare(a.date));
-  const writtenCount = monthEntries.filter(isWritten).length;
-  return `
-    <h1 class="page-title">日记</h1>
-    <section class="card">
-      <div class="cal-head">
-        <button class="icon-btn" data-act="cal-prev" aria-label="上个月">${ICON.left}</button>
-        <b>${y} 年 ${mo} 月</b>
-        <button class="icon-btn" data-act="cal-next" aria-label="下个月" ${m >= today.slice(0, 7) ? 'disabled' : ''}>${ICON.right}</button>
-      </div>
-      <div class="cal-grid">${['一', '二', '三', '四', '五', '六', '日'].map(w => `<span class="cal-w">${w}</span>`).join('')}${cells.join('')}</div>
-      <p class="muted small center">本月写了 ${writtenCount} 天 · 累计 ${streak().total} 篇</p>
-    </section>
-    ${monthEntries.length ? monthEntries.map(entryListItem).join('') : '<div class="empty-state">这个月还没有记录</div>'}`;
-}
-
-function entryListItem(e) {
-  const total = sumTime(e.time);
-  const done = e.todos.filter(t => t.done).length;
-  const n = dayNumber(e.date);
-  return `<button class="card entry-item" data-act="open-day" data-date="${e.date}">
-    <div class="entry-top"><b>${fmtCN(e.date)}</b>${n > 0 ? `<span class="muted small">入职第 ${n} 天</span>` : ''}</div>
-    <p class="entry-text">${isWritten(e) ? escapeHtml(e.text.trim().slice(0, 160)) : '<span class="muted">（还没写日记）</span>'}</p>
-    <div class="entry-meta">
-      ${e.todos.length ? `<span>计划完成 ${done}/${e.todos.length}</span>` : ''}
-      ${total ? `<span>${fmtH(total)} 小时</span>` : ''}
-      ${e.images.length ? `<span>${e.images.length} 张图</span>` : ''}
-    </div>
-    ${e.images.length ? `<div class="entry-thumbs">${e.images.slice(0, 3).map(id => `<img data-img-id="${id}" alt="">`).join('')}</div>` : ''}
-  </button>`;
-}
-
-/* Streak & posters */
-
-function viewStreak() {
+  const e = entryOf(today);
+  const draft = store.get(draftKey(today));
+  const text = draft ?? e.text;
+  const written = isWritten(e);
   const s = streak();
-  const next = MILESTONES.find(m => m > s.current);
+  const past = [...state.entries.values()].filter(x => x.date !== today && isWritten(x)).sort((a, b) => b.date.localeCompare(a.date));
   return `
-    <h1 class="page-title">打卡</h1>
-    <section class="card streak-hero">
-      <div class="flame big">${ICON.flame}</div>
-      <div class="streak-num">${s.current}<small>天</small></div>
-      <div class="muted">当前连续打卡</div>
-      <div class="streak-stats">
-        <div><b>${s.longest}</b><span>最长连续</span></div>
-        <div><b>${s.total}</b><span>累计篇数</span></div>
-        <div><b>${next ? next - s.current : '—'}</b><span>${next ? `天后达成 ${next} 天` : '全部达成'}</span></div>
+    ${pageHead('日记', `<span>${s.current ? `已连续记录 ${s.current} 天` : '每天一句就好'}</span>`, shareButtons('diary'))}
+    <section class="card diary-today">
+      <div class="diary-date">${fmtCN(today)}${written ? '<span class="tag">已记下</span>' : ''}</div>
+      <textarea id="diary-text" data-date="${today}" rows="2" maxlength="200" placeholder="今天开心吗^ ^？">${escapeHtml(text)}</textarea>
+      <div class="save-row">
+        <span class="muted small" id="draft-state">${draft != null && draft !== e.text ? DRAFT_NOTE : ''}</span>
+        <button class="btn primary" id="save-diary" data-act="save-diary" ${text.trim() ? '' : 'disabled'}>${written ? '更新' : '记下'}</button>
       </div>
-      ${s.writtenToday
-        ? `<button class="btn primary block" data-act="open-poster" data-date="${todayStr()}">生成今天的打卡海报</button>`
-        : '<button class="btn primary block" data-act="goto" data-view="today">去写今天的日记</button>'}
-      <p class="hint">${state.settings.skipWeekends ? '周末不写不算断签，写了照样计数。' : '每天都要写才算连续。'}可以在「我的」里修改。</p>
     </section>
-    <section class="card">
-      <div class="card-head"><h2>里程碑</h2><span class="muted small">按最长连续天数</span></div>
-      <div class="milestones">${MILESTONES.map(m => `<div class="ms ${s.longest >= m ? 'on' : ''}"><b>${m}</b><span>天</span></div>`).join('')}</div>
+    ${past.length ? `<h2 class="list-title">以前的日记</h2>
+      <section class="card diary-list"><ul>${past.map(x => `<li>
+        <button data-act="edit-diary" data-date="${x.date}"><span class="d">${fmtCN(x.date)}</span><span class="t">${escapeHtml(x.text.trim())}</span></button>
+      </li>`).join('')}</ul></section>` : ''}`;
+}
+
+/* 广场 */
+
+function boatBody(kind, body) {
+  if (kind === 'diary') return `<p class="boat-text">${escapeHtml(body?.text || '')}</p>`;
+  const todos = body?.todos || [];
+  if (!todos.length) return '<p class="boat-text muted">（空的待办）</p>';
+  return `<ul class="boat-todos">${todos.map(t => `<li class="${t.done ? 'done' : ''}">
+    <i aria-hidden="true"></i><span>${escapeHtml(t.text)}</span>${t.done && t.minutes ? `<em>${fmtMin(t.minutes)}</em>` : ''}
+  </li>`).join('')}</ul>`;
+}
+
+function boatCard(b, { act = '', attrs = '', foot = '' } = {}) {
+  const clickable = act ? `data-act="${act}" role="button" tabindex="0" ${attrs}` : '';
+  return `<article class="boat ${act ? 'clickable' : ''}" ${clickable}>
+    <div class="boat-head">
+      <span class="boat-kind">${b.kind === 'todo' ? '待办' : '日记'}</span>
+      <span class="boat-sign">${escapeHtml(b.signature || '一位实习生')}</span>
+      <span class="boat-date">${shortDate(b.boat_date)}</span>
+    </div>
+    ${boatBody(b.kind, b.body)}
+    ${foot ? `<div class="boat-foot">${foot}</div>` : ''}
+  </article>`;
+}
+
+const demoBanner = () => (plaza.isDemo() ? '<div class="demo-banner">演示模式：还没有连接广场服务器，海上的纸船是模拟的。</div>' : '');
+
+function viewPlaza() {
+  const p = state.plaza;
+  const st = p.stats || { released: 0, caught: 0, unread: 0 };
+  const quota = Math.max(0, st.released - st.caught);
+  const caught = p.caught.map(b => boatCard(b, {
+    act: 'open-caught', attrs: `data-boat="${b.id}" data-other="${b.author}"`,
+    foot: b.unread ? `<span class="unread-dot"></span>${b.unread} 条新回复` : '<span>留言</span>',
+  })).join('');
+  const mine = p.mine.map(b => boatCard(b, {
+    act: 'open-mine', attrs: `data-boat="${b.id}"`,
+    foot: b.unread ? `<span class="unread-dot"></span>${b.unread} 条新留言` : b.people.length ? `<span>${b.people.length} 人留言</span>` : '<span class="muted">还没有人留言</span>',
+  })).join('');
+  return `
+    ${pageHead('广场', '<span>把今天放进纸船，也捞一只别人的</span>')}
+    ${demoBanner()}
+    <section class="card sea">
+      <div class="sea-art" aria-hidden="true">${SEA_ART}</div>
+      <div class="sea-info">
+        <p class="sea-stats">你放出了 <b>${st.released}</b> 只纸船，还能捞 <b>${quota}</b> 只</p>
+        <div class="btn-row">
+          <button class="btn" data-act="plaza-release">放纸船</button>
+          <button class="btn primary" data-act="plaza-fish" ${p.loaded && quota ? '' : 'disabled'}>捞纸船</button>
+        </div>
+        <p class="hint">放出几只，就能捞几只。每天的待办和日记各算一只。</p>
+      </div>
     </section>
+    ${p.error ? `<div class="card error-card"><span>${escapeHtml(p.error)}</span><button class="btn small" data-act="plaza-retry">重试</button></div>` : ''}
+    ${!p.loaded && !p.error ? '<div class="empty-state">正在连接广场…</div>' : ''}
+    ${p.loaded ? `
+      <h2 class="list-title">捞到的纸船</h2>
+      ${caught || '<div class="empty-state small-empty">还没有捞过纸船</div>'}
+      <h2 class="list-title">我放的纸船</h2>
+      ${mine || '<div class="empty-state small-empty">还没有放过纸船</div>'}` : ''}`;
+}
+
+/* 通知 */
+
+function viewInbox() {
+  const p = state.plaza;
+  const items = p.inbox.map(m => `<li>
+    <button class="note ${m.unread ? 'unread' : ''}" data-act="open-thread" data-boat="${m.boat_id}" data-other="${m.other}">
+      <span class="note-title">${m.my_boat ? '有人给你的纸船留言了' : '纸船的主人回复了你'}</span>
+      <span class="note-body">${escapeHtml(m.body)}</span>
+      <span class="note-meta">${m.kind === 'todo' ? '待办' : '日记'}纸船 · ${relTime(m.created_at)}</span>
+    </button>
+  </li>`).join('');
+  return `
+    ${pageHead('通知', '<span>纸船上的留言和回复</span>')}
+    ${demoBanner()}
+    ${p.error ? `<div class="card error-card"><span>${escapeHtml(p.error)}</span><button class="btn small" data-act="plaza-retry">重试</button></div>` : ''}
+    ${!p.loaded && !p.error ? '<div class="empty-state">正在加载…</div>' : ''}
+    ${p.loaded ? (items ? `<section class="card note-list"><ul>${items}</ul></section>` : '<div class="empty-state">还没有通知。<br>放出纸船后，有人留言会出现在这里。</div>') : ''}`;
+}
+
+/* 我的 */
+
+const signature = () => [state.settings.boatShowCompany ? state.profile.company : '', state.profile.role].filter(Boolean).join(' · ');
+
+function viewSettings() {
+  const p = state.profile;
+  const s = state.settings;
+  const cfg = ai.config();
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const notifyLabel = { granted: '浏览器通知已开启', denied: '通知被浏览器拒绝了', unsupported: '这个浏览器不支持通知' }[perm] || '开启浏览器通知';
+  const lastBackup = store.get('lastBackup');
+  return `
+    ${pageHead('我的')}
+    <form class="card" data-form="profile">
+      <div class="card-head"><h2>我的实习</h2></div>
+      ${profileFields(p)}
+      <button class="btn primary block" type="submit">保存</button>
+    </form>
+
     <section class="card">
-      <div class="card-head"><h2>海报主题</h2><span class="muted small">连续打卡解锁</span></div>
-      <div class="themes">${THEMES.map(t => {
-        const ok = s.longest >= t.unlock;
-        const sel = state.settings.posterTheme === t.id;
-        return `<button class="theme-swatch ${ok ? '' : 'locked'} ${sel ? 'sel' : ''}" data-act="pick-theme" data-id="${t.id}" ${ok ? '' : 'disabled'}
-          style="background:linear-gradient(135deg,${t.bg[0]},${t.bg[1]});color:${t.text}">
-          <b>${t.name}</b><span>${ok ? (sel ? '使用中' : '已解锁') : `${ICON.lock}连续 ${t.unlock} 天解锁`}</span>
-        </button>`;
-      }).join('')}</div>
-    </section>`;
+      <div class="card-head"><h2>纸船署名</h2></div>
+      <p class="sign-preview">${escapeHtml(signature() || '一位实习生')}</p>
+      <label class="switch"><input type="checkbox" data-change="boat-company" ${s.boatShowCompany ? 'checked' : ''}><span>署名里显示公司</span></label>
+      <p class="hint">别人捞到你的纸船时会看到这个署名。${plaza.isDemo() ? '广场目前是演示模式，还没有连接服务器。' : ''}</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>每日提醒</h2></div>
+      <label class="field row"><span>提醒时间</span><input type="time" data-change="reminder-time" value="${s.reminderTime}"></label>
+      <label class="switch"><input type="checkbox" data-change="skip-weekends" ${s.skipWeekends ? 'checked' : ''}><span>周末不写不算中断</span></label>
+      <div class="btn-row">
+        <button class="btn primary" data-act="download-ics">添加到手机日历</button>
+        <button class="btn" data-act="enable-notify" ${perm === 'default' ? '' : 'disabled'}>${notifyLabel}</button>
+      </div>
+      <p class="hint">网页 App 关掉以后没法自己弹提醒。最稳的是「添加到手机日历」，每天到点由日历提醒你；改了提醒时间要重新添加一次。</p>
+    </section>
+
+    <form class="card" data-form="ai">
+      <div class="card-head"><h2>AI 翻译与帖子（可选）</h2></div>
+      <p class="muted small" style="margin-bottom:12px">用来把记录翻译成英文、生成 LinkedIn 帖子。需要你自己的 Claude API Key（在 console.anthropic.com 创建，按用量付费）。</p>
+      <label class="field"><span>Claude API Key</span><input name="apiKey" type="password" autocomplete="off" placeholder="sk-ant-…" value="${escapeHtml(cfg.apiKey || '')}"></label>
+      <label class="field"><span>模型</span><select name="model">${ai.MODELS.map(m => `<option value="${m.id}" ${m.id === (cfg.model || ai.DEFAULT_MODEL) ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label>
+      <div class="btn-row">
+        <button class="btn primary" type="submit">保存</button>
+        <button class="btn" type="button" data-act="test-ai">测试连接</button>
+      </div>
+      <p class="hint">Key 只存在这台设备上，不会写进备份文件。</p>
+    </form>
+
+    <section class="card">
+      <div class="card-head"><h2>数据</h2></div>
+      <p class="muted small">待办和日记只保存在这台设备的浏览器里。换手机、清理浏览器数据之前，先导出备份。${lastBackup ? `上次备份：${lastBackup}。` : '还没有备份过。'}</p>
+      <div class="btn-row">
+        <button class="btn" data-act="backup-export">导出备份</button>
+        <label class="btn">从备份恢复<input type="file" accept="application/json,.json" data-change="backup-import" hidden></label>
+      </div>
+      <button class="btn danger block" data-act="clear-all">清空全部数据</button>
+    </section>
+    <p class="muted small center">实习成长日记 v2.0</p>`;
+}
+
+/* ---------- Sheets ---------- */
+
+function openModal(html, onMount) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal';
+  wrap.innerHTML = `<div class="modal-backdrop" data-modal-close></div><div class="modal-sheet" role="dialog" aria-modal="true">${html}</div>`;
+  $('#modal-root').appendChild(wrap);
+  document.body.classList.add('modal-open');
+  const onKey = ev => { if (ev.key === 'Escape') close(); };
+  function close() {
+    wrap.remove();
+    document.removeEventListener('keydown', onKey);
+    if (!$('#modal-root').children.length) document.body.classList.remove('modal-open');
+  }
+  document.addEventListener('keydown', onKey);
+  wrap.addEventListener('click', ev => { if (ev.target.closest('[data-modal-close]')) close(); });
+  onMount?.($('.modal-sheet', wrap), close);
+  return close;
+}
+
+function busy(btn, on, label = '处理中…') {
+  if (!btn) return;
+  if (on) {
+    btn.dataset.label = btn.textContent;
+    btn.textContent = label;
+    btn.disabled = true;
+  } else {
+    btn.textContent = btn.dataset.label || btn.textContent;
+    btn.disabled = false;
+  }
+}
+
+function openAdd() {
+  const date = state.date;
+  openModal(`
+    <h2 class="modal-title">添加待办</h2>
+    <form class="inline-form add-form"><input name="text" maxlength="80" placeholder="要做什么？" autocomplete="off" enterkeyhint="send"><button class="btn primary" type="submit">添加</button></form>
+    <ul class="added-list"></ul>
+    <p class="hint center">回车可以连续添加</p>
+    <button class="btn ghost block" data-modal-close>完成</button>`, sheet => {
+    const input = $('input', sheet);
+    input.focus();
+    $('form', sheet).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      const e = ensureEntry(date);
+      e.todos.push({ id: uid(), text, done: false });
+      await persist(e);
+      input.value = '';
+      input.focus();
+      $('.added-list', sheet).insertAdjacentHTML('beforeend', `<li>${escapeHtml(text)}</li>`);
+      render();
+    });
+  });
+}
+
+function askDuration(date, id) {
+  const t = entryOf(date).todos.find(x => x.id === id);
+  if (!t) return;
+  openModal(`
+    <h2 class="modal-title">大概用了多久？</h2>
+    <p class="dur-task">${escapeHtml(t.text)}</p>
+    <div class="dur-grid">${DURATIONS.map(([m, l]) => `<button type="button" class="chip ${t.minutes === m ? 'sel' : ''}" data-min="${m}">${l}</button>`).join('')}</div>
+    <form class="inline-form"><input name="min" type="number" min="1" max="720" inputmode="numeric" placeholder="自己填（分钟）"><button class="btn" type="submit">确定</button></form>
+    <button class="btn ghost block" data-modal-close>先跳过</button>`, (sheet, close) => {
+    const set = async minutes => {
+      const e = ensureEntry(date);
+      const todo = e.todos.find(x => x.id === id);
+      if (todo) {
+        todo.minutes = minutes;
+        await persist(e);
+        render();
+      }
+      close();
+    };
+    sheet.querySelectorAll('[data-min]').forEach(b => b.addEventListener('click', () => set(Number(b.dataset.min))));
+    $('form', sheet).addEventListener('submit', ev => {
+      ev.preventDefault();
+      const m = Math.round(Number(ev.target.elements.min.value));
+      if (m >= 1 && m <= 720) set(m);
+      else toast('填 1 到 720 之间的分钟数');
+    });
+  });
+}
+
+function editDiary(date) {
+  const e = entryOf(date);
+  openModal(`
+    <h2 class="modal-title">${fmtCN(date)}</h2>
+    <textarea id="edit-diary-text" rows="3" maxlength="200" placeholder="今天开心吗^ ^？">${escapeHtml(e.text)}</textarea>
+    <div class="btn-row"><button class="btn" data-modal-close>取消</button><button class="btn primary" id="edit-diary-save">保存</button></div>`, (sheet, close) => {
+    $('#edit-diary-save', sheet).addEventListener('click', async () => {
+      const target = ensureEntry(date);
+      target.text = $('#edit-diary-text', sheet).value.trim();
+      await persist(target);
+      close();
+      render();
+      toast('已更新');
+    });
+  });
+}
+
+function celebrateDiary(date, newly) {
+  const s = streak(date);
+  const next = MILESTONES.find(m => m > s.current);
+  const extra = newly.length ? `解锁新海报主题：${newly.map(t => t.name).join('、')}` : next ? `再坚持 ${next - s.current} 天，达成 ${next} 天` : '';
+  openModal(`
+    <div class="celebrate">
+      <div class="done-badge">${ICON.check}</div>
+      <h2>记下了</h2>
+      <p>已连续记录 ${s.current} 天${extra ? ` · ${extra}` : ''}</p>
+    </div>
+    <div class="btn-row"><button class="btn primary" data-boat>放成纸船</button><button class="btn" data-poster>生成图片</button></div>
+    <button class="btn ghost block" data-modal-close>好的</button>`, (sheet, close) => {
+    $('[data-boat]', sheet).addEventListener('click', () => { close(); openShare('diary', date); });
+    $('[data-poster]', sheet).addEventListener('click', () => { close(); openPoster(date); });
+  });
+}
+
+/* Sharing: a page becomes a paper boat in the plaza, or a picture. */
+
+function boatPayload(kind, date) {
+  const e = entryOf(date);
+  if (kind === 'todo') {
+    if (!e.todos.length) return null;
+    return { todos: e.todos.map(t => ({ text: t.text, done: t.done, ...(t.done && t.minutes ? { minutes: t.minutes } : {}) })) };
+  }
+  return isWritten(e) ? { text: e.text.trim() } : null;
+}
+
+function openShare(kind, date = kind === 'todo' ? state.date : todayStr()) {
+  const body = boatPayload(kind, date);
+  const tooOld = daysBetween(date, todayStr()) > 1;
+  const empty = kind === 'todo' ? '先添加几项待办，再放成纸船' : '先写一句今天的日记，再放成纸船';
+  openModal(`
+    <h2 class="modal-title">分享${kind === 'todo' ? '待办' : '日记'}</h2>
+    ${body ? boatCard({ kind, body, signature: signature(), boat_date: date }) : `<p class="empty-state small-empty">${empty}</p>`}
+    <button class="btn primary block" data-release ${body && !tooOld ? '' : 'disabled'}>${ICON.boat}放成纸船，漂到广场</button>
+    <button class="btn block" data-poster>生成分享图片</button>
+    <p class="hint center">${tooOld ? '只能放今天或昨天的纸船。' : `纸船署名：${escapeHtml(signature() || '一位实习生')}，可以在「我的」里修改。`}</p>`, (sheet, close) => {
+    $('[data-release]', sheet).addEventListener('click', async ev => {
+      const btn = ev.currentTarget;
+      splash();
+      busy(btn, true, '正在放纸船…');
+      try {
+        const r = await plaza.release(kind, body, signature(), date);
+        store.set('plaza-used', '1');
+        close();
+        toast(r.is_new ? '纸船漂出去了，去广场捞一只吧' : '纸船内容已更新');
+        refreshPlaza();
+      } catch (err) {
+        busy(btn, false);
+        toast(err.message, 3500);
+      }
+    });
+    $('[data-poster]', sheet).addEventListener('click', () => { close(); openPoster(date); });
+  });
+}
+
+function openReleasePicker() {
+  const today = todayStr();
+  const e = entryOf(today);
+  const todo = boatPayload('todo', today);
+  const diary = boatPayload('diary', today);
+  openModal(`
+    <h2 class="modal-title">放一只纸船</h2>
+    <button class="pick" data-kind="todo" ${todo ? '' : 'disabled'}>
+      <b>今天的待办</b><span>${todo ? `${e.todos.length} 项，完成 ${e.todos.filter(t => t.done).length} 项` : '今天还没有待办'}</span>
+    </button>
+    <button class="pick" data-kind="diary" ${diary ? '' : 'disabled'}>
+      <b>今天的日记</b><span>${diary ? escapeHtml(diary.text) : '今天还没写日记'}</span>
+    </button>
+    <button class="btn ghost block" data-modal-close>取消</button>`, (sheet, close) => {
+    sheet.querySelectorAll('.pick').forEach(b => b.addEventListener('click', () => { close(); openShare(b.dataset.kind, today); }));
+  });
+}
+
+/* Plaza data */
+
+async function refreshPlaza() {
+  const p = state.plaza;
+  if (p.loading) return;
+  p.loading = true;
+  try {
+    const [stats, mine, caught, inbox] = await Promise.all([plaza.stats(), plaza.myBoats(), plaza.caughtBoats(), plaza.inbox()]);
+    Object.assign(p, { stats, mine, caught, inbox, loaded: true, error: '' });
+    store.set('plaza-used', '1');
+  } catch (err) {
+    p.error = err.message;
+  } finally {
+    p.loading = false;
+  }
+  if (state.view === 'plaza' || state.view === 'inbox') render();
+  else updateBadge();
+}
+
+// Cheap check for the 通知 badge; only for people who have used the plaza, so nobody is signed in just by opening the app.
+async function refreshUnread() {
+  if (!state.profile || !store.get('plaza-used') || document.visibilityState !== 'visible') return;
+  try {
+    state.plaza.stats = await plaza.stats();
+    updateBadge();
+  } catch { /* offline: keep the last count */ }
+}
+
+async function fishBoat(btn) {
+  splash();
+  busy(btn, true, '正在捞…');
+  try {
+    const b = await plaza.fish();
+    await refreshPlaza();
+    openThread(b.id, b.author, { title: '捞到一只纸船', fresh: true });
+  } catch (err) {
+    toast(err.message, 3500);
+  } finally {
+    busy(btn, false);
+  }
+}
+
+const bubbles = list => (list.length
+  ? list.map(m => `<div class="msg ${m.mine ? 'mine' : ''}"><p>${escapeHtml(m.body)}</p><span>${relTime(m.created_at)}</span></div>`).join('')
+  : '<p class="msgs-empty">还没有留言，说点什么吧</p>');
+
+async function openThread(boatId, other, { title = '', fresh = false } = {}) {
+  let data;
+  try {
+    data = await plaza.openThread(boatId, other);
+  } catch (err) {
+    toast(err.message, 3500);
+    return;
+  }
+  refreshPlaza();
+  const mine = data.boat.mine;
+  openModal(`
+    <h2 class="modal-title">${title || (mine ? '你的纸船' : '捞到的纸船')}</h2>
+    <div class="${fresh ? 'boat-arrive' : ''}">${boatCard(data.boat)}</div>
+    <div class="msgs">${bubbles(data.messages)}</div>
+    <form class="inline-form msg-form"><input name="body" maxlength="300" placeholder="${mine ? '回复 TA' : '给 TA 留言，TA 会收到'}" autocomplete="off" enterkeyhint="send"><button class="btn primary" type="submit">发送</button></form>
+    ${mine ? '' : '<button class="link-btn" data-report>举报这只纸船</button>'}`, sheet => {
+    const msgs = $('.msgs', sheet);
+    msgs.scrollTop = msgs.scrollHeight;
+    $('form', sheet).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const input = ev.target.elements.body;
+      const body = input.value.trim();
+      if (!body) return;
+      const btn = $('button[type=submit]', sheet);
+      busy(btn, true, '发送中…');
+      try {
+        const m = await plaza.send(boatId, body, mine ? other : null);
+        data.messages.push(m);
+        msgs.innerHTML = bubbles(data.messages);
+        msgs.scrollTop = msgs.scrollHeight;
+        input.value = '';
+      } catch (err) {
+        toast(err.message, 3500);
+      } finally {
+        busy(btn, false);
+      }
+    });
+    $('[data-report]', sheet)?.addEventListener('click', async () => {
+      if (!confirm('举报这只纸船？被多人举报的纸船会从海上消失。')) return;
+      try {
+        await plaza.report(boatId, '用户举报');
+        toast('已举报，谢谢');
+      } catch (err) {
+        toast(err.message, 3500);
+      }
+    });
+  });
+}
+
+// One of my own boats: talk to whoever wrote to me about it.
+function openMine(boatId) {
+  const b = state.plaza.mine.find(x => x.id === boatId);
+  if (!b) return;
+  if (b.people.length === 1) {
+    openThread(b.id, b.people[0]);
+    return;
+  }
+  openModal(`
+    <h2 class="modal-title">你的纸船</h2>
+    ${boatCard(b)}
+    ${b.people.length
+      ? `<h3 class="list-title">谁给你留言了</h3><div class="people">${b.people.map((who, i) => `<button class="pick" data-who="${who}"><b>第 ${i + 1} 位读者</b><span>点开看留言</span></button>`).join('')}</div>`
+      : '<p class="msgs-empty">还没有人留言。有人捞到并留言时，会出现在「通知」里。</p>'}
+    <button class="link-btn danger" data-remove>收回这只纸船</button>`, (sheet, close) => {
+    sheet.querySelectorAll('[data-who]').forEach(btn => btn.addEventListener('click', () => { close(); openThread(b.id, btn.dataset.who); }));
+    $('[data-remove]', sheet).addEventListener('click', async () => {
+      if (!confirm('收回后，别人就看不到这只纸船了，留言也会一起删除。确定吗？')) return;
+      try {
+        await plaza.removeBoat(b.id);
+        close();
+        toast('已收回');
+        refreshPlaza();
+      } catch (err) {
+        toast(err.message, 3500);
+      }
+    });
+  });
+}
+
+/* Picture (poster) */
+
+function defaultQuote(text) {
+  const first = (text || '').split(/[。！？!?\n]/).map(s => s.trim()).find(Boolean) || '今天也在认真成长。';
+  return first.length > 60 ? first.slice(0, 60) + '…' : first;
 }
 
 function posterData(date, quote, showCompany) {
   const e = entryOf(date);
   const d = parseDate(date);
-  const time = Object.entries(e.time || {}).filter(([, h]) => h > 0).sort((a, b) => b[1] - a[1]).map(([name, h]) => ({ name, h, color: catColor(name) }));
+  const timed = e.todos.filter(t => t.done && t.minutes).sort((a, b) => b.minutes - a.minutes);
   return {
     dateLabel: `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${weekdayCN(date)}`,
     streak: streak(date).current,
@@ -380,8 +731,8 @@ function posterData(date, quote, showCompany) {
     quote: quote.trim() || defaultQuote(e.text),
     todoDone: e.todos.filter(t => t.done).length,
     todoTotal: e.todos.length,
-    time,
-    totalH: sumTime(e.time),
+    time: timed.map((t, i) => ({ name: t.text.length > 8 ? t.text.slice(0, 8) + '…' : t.text, h: t.minutes / 60, color: CAT_COLORS[i % CAT_COLORS.length] })),
+    totalH: spentMinutes(e) / 60,
   };
 }
 
@@ -393,25 +744,19 @@ function canShareFiles() {
   }
 }
 
-function openPoster(date, { celebrate = false, newly = [] } = {}) {
+function openPoster(date) {
   const e = entryOf(date);
-  const count = streak(date).current;
   const unlocked = THEMES.filter(t => streak().longest >= t.unlock);
-  let themeId = newly.length ? newly[newly.length - 1].id
-    : unlocked.some(t => t.id === state.settings.posterTheme) ? state.settings.posterTheme : unlocked[0].id;
-  const next = MILESTONES.find(m => m > count);
-  const head = celebrate
-    ? `<div class="celebrate"><div class="flame big">${ICON.flame}</div>
-        <h2>打卡成功！连续 ${count} 天</h2>
-        <p>${newly.length ? `解锁了新海报主题：<b>${newly.map(t => t.name).join('、')}</b>` : next ? `再坚持 ${next - count} 天，就到 ${next} 天里程碑` : '所有里程碑都达成了，了不起'}</p>
-      </div>`
-    : '<h2 class="modal-title">打卡海报</h2>';
+  let themeId = unlocked.some(t => t.id === state.settings.posterTheme) ? state.settings.posterTheme : unlocked[0].id;
+  const next = THEMES.find(t => t.unlock > streak().longest);
   const share = canShareFiles();
-  openModal(`${head}
-    <div class="poster-wrap"><canvas id="poster-canvas" role="img" aria-label="打卡海报预览"></canvas></div>
+  openModal(`
+    <h2 class="modal-title">分享图片</h2>
+    <div class="poster-wrap"><canvas id="poster-canvas" role="img" aria-label="分享图片预览"></canvas></div>
     <div class="chips theme-row">${unlocked.map(t => `<button type="button" class="chip ${t.id === themeId ? 'sel' : ''}" data-theme="${t.id}">${t.name}</button>`).join('')}</div>
-    <label class="field"><span>海报上的一句话</span><textarea id="poster-quote" rows="2" maxlength="80">${escapeHtml(e.posterQuote ?? defaultQuote(e.text))}</textarea></label>
-    <label class="switch"><input type="checkbox" id="poster-company" ${state.settings.posterShowCompany ? 'checked' : ''}><span>海报上显示公司名</span></label>
+    ${next ? `<p class="hint center">连续记录 ${next.unlock} 天，解锁「${next.name}」</p>` : ''}
+    <label class="field"><span>图片上的一句话</span><textarea id="poster-quote" rows="2" maxlength="80">${escapeHtml(e.posterQuote ?? defaultQuote(e.text))}</textarea></label>
+    <label class="switch"><input type="checkbox" id="poster-company" ${state.settings.posterShowCompany ? 'checked' : ''}><span>图片上显示公司名</span></label>
     <div class="btn-row">
       <button type="button" class="btn" data-modal-close>关闭</button>
       <button type="button" class="btn primary" id="poster-save">保存图片</button>
@@ -421,10 +766,12 @@ function openPoster(date, { celebrate = false, newly = [] } = {}) {
     const quoteEl = $('#poster-quote', sheet);
     const companyEl = $('#poster-company', sheet);
     let blob = null;
-    const draw = () => {
-      renderPoster(canvas, posterData(date, quoteEl.value, companyEl.checked), THEMES.find(t => t.id === themeId));
+    let drawId = 0;
+    const draw = async () => {
+      const id = ++drawId;
       blob = null;
-      canvas.toBlob(b => { blob = b; }, 'image/png');
+      await renderPoster(canvas, posterData(date, quoteEl.value, companyEl.checked), THEMES.find(t => t.id === themeId));
+      if (id === drawId) canvas.toBlob(b => { if (id === drawId) blob = b; }, 'image/png');
     };
     draw();
     sheet.querySelectorAll('[data-theme]').forEach(b => b.addEventListener('click', () => {
@@ -446,16 +793,16 @@ function openPoster(date, { celebrate = false, newly = [] } = {}) {
       draw();
     });
     $('#poster-save', sheet).addEventListener('click', () => {
-      canvas.toBlob(b => downloadBlob(b, `打卡海报_${date}.png`), 'image/png');
+      canvas.toBlob(b => downloadBlob(b, `实习成长日记_${date}.png`), 'image/png');
     });
     // navigator.share has to run inside the tap itself, so the image is prepared in advance.
     $('#poster-share', sheet)?.addEventListener('click', async () => {
       if (!blob) {
-        toast('海报还在生成，请再点一次');
+        toast('图片还在生成，请稍后再点');
         return;
       }
       try {
-        await navigator.share({ files: [new File([blob], `poster-${date}.png`, { type: 'image/png' })] });
+        await navigator.share({ files: [new File([blob], `diary-${date}.png`, { type: 'image/png' })] });
       } catch (err) {
         if (err.name !== 'AbortError') toast('分享失败，可以先保存图片');
       }
@@ -463,7 +810,7 @@ function openPoster(date, { celebrate = false, newly = [] } = {}) {
   });
 }
 
-/* Export & LinkedIn */
+/* Export (a sheet on the 待办 and 日记 pages) */
 
 function exportRange() {
   const today = todayStr();
@@ -472,7 +819,7 @@ function exportRange() {
   if (x.range === 'month') return { from: today.slice(0, 8) + '01', to: today };
   if (x.range === 'all') {
     const first = [...state.entries.values()].filter(hasContent).map(e => e.date).sort()[0];
-    return { from: first && first < state.profile.startDate ? first : state.profile.startDate, to: today };
+    return { from: first || today, to: today };
   }
   let from = x.from || addDays(today, -6);
   let to = x.to || today;
@@ -483,68 +830,71 @@ const entriesBetween = (from, to) => [...state.entries.values()]
   .filter(e => e.date >= from && e.date <= to && hasContent(e))
   .sort((a, b) => a.date.localeCompare(b.date));
 
-function viewExport() {
+function exportHTML() {
   const { from, to } = exportRange();
   const list = entriesBetween(from, to);
   const x = state.exp;
   const aiOn = ai.hasKey();
-  const anyText = list.some(isWritten);
-  const seg = (act, key, options) => `<div class="seg">${options.map(([v, l]) => `<button class="${key === v ? 'sel' : ''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
+  const anyText = list.some(e => isWritten(e) || e.todos.length);
+  const seg = (act, key, options) => `<div class="seg">${options.map(([v, l]) => `<button class="${key === v ? 'sel' : ''}" data-x="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
   const dis = list.length ? '' : 'disabled';
   return `
-    <h1 class="page-title">导出</h1>
-    <section class="card">
-      <div class="card-head"><h2>导出日记</h2></div>
-      <div class="field"><span>范围</span>${seg('exp-range', x.range, [['week', '本周'], ['month', '本月'], ['all', '全部'], ['custom', '自定义']])}</div>
-      ${x.range === 'custom'
-        ? `<div class="two">
-            <label class="field"><span>从</span><input type="date" data-change="exp-from" value="${from}" max="${todayStr()}"></label>
-            <label class="field"><span>到</span><input type="date" data-change="exp-to" value="${to}" max="${todayStr()}"></label>
-          </div>`
-        : `<p class="muted small" style="margin:-4px 0 12px">${from} 至 ${to}</p>`}
-      <div class="field"><span>包含</span><div class="checks">
-        <label><input type="checkbox" checked disabled> 日记正文</label>
-        <label><input type="checkbox" data-change="exp-opt" data-key="images" ${x.images ? 'checked' : ''}> 图片</label>
-        <label><input type="checkbox" data-change="exp-opt" data-key="todos" ${x.todos ? 'checked' : ''}> 今日计划</label>
-        <label><input type="checkbox" data-change="exp-opt" data-key="time" ${x.time ? 'checked' : ''}> 时间复盘</label>
-      </div></div>
-      <div class="field"><span>语言</span>${seg('exp-lang', x.lang, [['zh', '中文原文'], ['en', '英文（AI 翻译）']])}
-        ${x.lang === 'en' && !aiOn ? '<p class="warn small">翻译需要先在「我的」里填 Claude API Key。</p>' : ''}
-      </div>
-      <p class="count">共 <b>${list.length}</b> 天的记录</p>
-      <div class="btn-row">
-        <button class="btn primary" data-act="export" data-fmt="docx" ${dis}>Word</button>
-        <button class="btn primary" data-act="export" data-fmt="pdf" ${dis}>PDF</button>
-        <button class="btn primary" data-act="export" data-fmt="md" ${dis}>Markdown</button>
-      </div>
-      <p class="hint">PDF 会打开系统的打印窗口，目标选「存储为 PDF」即可。</p>
-    </section>
-    <section class="card">
-      <div class="card-head"><h2>生成 LinkedIn 帖子</h2></div>
-      <p class="muted small" style="margin-bottom:12px">用上面选的范围（${from} 至 ${to}）里的日记写一条帖子。</p>
-      ${aiOn ? `<div class="field"><span>帖子语言</span>${seg('li-lang', state.li.lang, [['en', 'English'], ['zh', '中文']])}</div>` : ''}
-      <label class="switch"><input type="checkbox" data-change="li-company" ${state.li.mentionCompany ? 'checked' : ''}><span>帖子里写出公司名</span></label>
-      <button class="btn primary block" data-act="li-generate" ${anyText ? '' : 'disabled'}>${aiOn ? 'AI 生成帖子' : '用模板生成（中文）'}</button>
-      ${aiOn ? '' : '<p class="hint">在「我的」里填 Claude API Key 后，可以让 AI 写中文或英文帖子。没有 Key 也可以先用模板，或者复制提示词，粘贴到任意 AI 助手里。</p>'}
-      <textarea id="li-text" rows="10" placeholder="生成的帖子会出现在这里，可以直接修改">${escapeHtml(state.li.text)}</textarea>
-      <div class="btn-row">
-        <button class="btn primary" data-act="li-open" ${state.li.text.trim() ? '' : 'disabled'}>复制并打开 LinkedIn</button>
-        <button class="btn" data-act="li-prompt" ${anyText ? '' : 'disabled'}>复制 AI 提示词</button>
-      </div>
-      <p class="hint">LinkedIn 不支持从网页带图片直接发帖，打卡海报需要在 LinkedIn 里手动添加。</p>
-    </section>`;
+    <h2 class="modal-title">导出</h2>
+    <div class="field"><span>范围</span>${seg('exp-range', x.range, [['week', '本周'], ['month', '本月'], ['all', '全部'], ['custom', '自定义']])}</div>
+    ${x.range === 'custom'
+      ? `<div class="two">
+          <label class="field"><span>从</span><input type="date" data-xc="exp-from" value="${from}" max="${todayStr()}"></label>
+          <label class="field"><span>到</span><input type="date" data-xc="exp-to" value="${to}" max="${todayStr()}"></label>
+        </div>`
+      : `<p class="muted small" style="margin:-4px 0 12px 4px">${from} 至 ${to}</p>`}
+    <div class="field"><span>包含</span><div class="checks">
+      <label><input type="checkbox" checked disabled> 日记</label>
+      <label><input type="checkbox" data-xc="exp-opt" data-key="todos" ${x.todos ? 'checked' : ''}> 待办和用时</label>
+      <label><input type="checkbox" data-xc="exp-opt" data-key="images" ${x.images ? 'checked' : ''}> 图片</label>
+    </div></div>
+    <div class="field"><span>语言</span>${seg('exp-lang', x.lang, [['zh', '中文原文'], ['en', '英文（AI 翻译）']])}
+      ${x.lang === 'en' && !aiOn ? '<p class="warn small">翻译需要先在「我的」里填 Claude API Key。</p>' : ''}
+    </div>
+    <p class="count">共 <b>${list.length}</b> 天的记录</p>
+    <div class="btn-row">
+      <button class="btn primary" data-x="export" data-fmt="docx" ${dis}>Word</button>
+      <button class="btn primary" data-x="export" data-fmt="pdf" ${dis}>PDF</button>
+      <button class="btn primary" data-x="export" data-fmt="md" ${dis}>Markdown</button>
+    </div>
+    <p class="hint">PDF 会打开系统的打印窗口，目标选「存储为 PDF」即可。</p>
+    <h3 class="list-title">生成 LinkedIn 帖子</h3>
+    ${aiOn ? `<div class="field"><span>帖子语言</span>${seg('li-lang', state.li.lang, [['en', 'English'], ['zh', '中文']])}</div>` : ''}
+    <label class="switch"><input type="checkbox" data-xc="li-company" ${state.li.mentionCompany ? 'checked' : ''}><span>帖子里写出公司名</span></label>
+    <button class="btn primary block" data-x="li-generate" ${anyText ? '' : 'disabled'}>${aiOn ? 'AI 生成帖子' : '用模板生成（中文）'}</button>
+    <textarea id="li-text" rows="8" placeholder="生成的帖子会出现在这里，可以直接修改">${escapeHtml(state.li.text)}</textarea>
+    <div class="btn-row">
+      <button class="btn primary" data-x="li-open" ${state.li.text.trim() ? '' : 'disabled'}>复制并打开 LinkedIn</button>
+      <button class="btn" data-x="li-prompt" ${anyText ? '' : 'disabled'}>复制 AI 提示词</button>
+    </div>
+    <button class="btn ghost block" data-modal-close>完成</button>`;
 }
 
-function busy(btn, on) {
-  if (!btn) return;
-  if (on) {
-    btn.dataset.label = btn.textContent;
-    btn.textContent = '处理中…';
-    btn.disabled = true;
-  } else {
-    btn.textContent = btn.dataset.label || btn.textContent;
-    btn.disabled = false;
-  }
+function openExport() {
+  openModal('', sheet => {
+    const paint = () => { sheet.innerHTML = exportHTML(); };
+    paint();
+    sheet.addEventListener('click', ev => {
+      const el = ev.target.closest('[data-x]');
+      if (!el || el.disabled) return;
+      ev.preventDefault();
+      EXPORT_ACTIONS[el.dataset.x]?.(el, paint);
+    });
+    sheet.addEventListener('change', ev => {
+      const el = ev.target.closest('[data-xc]');
+      if (el) EXPORT_CHANGES[el.dataset.xc]?.(el, paint);
+    });
+    sheet.addEventListener('input', ev => {
+      if (ev.target.id !== 'li-text') return;
+      state.li.text = ev.target.value;
+      const btn = $('[data-x="li-open"]', sheet);
+      if (btn) btn.disabled = !ev.target.value.trim();
+    });
+  });
 }
 
 // Translates every entry in the range (three at a time), reusing cached translations.
@@ -593,7 +943,8 @@ async function doExport(fmt, btn) {
         if (img) images.set(id, img);
       }
     }
-    const model = exporter.buildModel({ entries: list, profile: state.profile, from, to, lang: x.lang, include: x, images, tr });
+    const include = { todos: x.todos, time: x.todos, images: x.images };
+    const model = exporter.buildModel({ entries: list, profile: state.profile, from, to, lang: x.lang, include, images, tr });
     if (fmt === 'md') {
       downloadBlob(new Blob([exporter.toMarkdown(model)], { type: 'text/markdown;charset=utf-8' }), exporter.fileName(model, 'md'));
     } else if (fmt === 'docx') {
@@ -612,52 +963,51 @@ async function doExport(fmt, btn) {
 
 function postArgs() {
   const { from, to } = exportRange();
-  const entries = entriesBetween(from, to).filter(isWritten).map(e => ({
+  const entries = entriesBetween(from, to).filter(e => isWritten(e) || e.todos.some(t => t.done)).map(e => ({
     date: e.date,
     day: dayNumber(e.date),
-    text: e.text.trim(),
+    text: (e.text || '').trim(),
     done: e.todos.filter(t => t.done).map(t => t.text),
-    time: Object.entries(e.time || {}).filter(([, h]) => h > 0).map(([cat, h]) => ({ cat, h })),
+    time: e.todos.filter(t => t.done && t.minutes).map(t => ({ cat: t.text, h: Math.round((t.minutes / 60) * 10) / 10 })),
   }));
   return { entries, profile: state.profile, lang: state.li.lang, mentionCompany: state.li.mentionCompany, from, to };
 }
 
 function templatePost({ entries, profile, mentionCompany, from, to }) {
-  const md = s => `${Number(s.slice(5, 7))}/${Number(s.slice(8, 10))}`;
   const firstLine = t => {
     const line = t.split('\n').map(s => s.trim()).find(Boolean) || '';
     return line.length > 40 ? line.slice(0, 40) + '…' : line;
   };
+  const lines = entries.slice(-5).map(e => `· ${firstLine(e.text || e.done.join('、'))}`);
   const totals = {};
   entries.forEach(e => e.time.forEach(t => { totals[t.cat] = (totals[t.cat] || 0) + t.h; }));
   const top = Object.entries(totals).sort((a, b) => b[1] - a[1])[0];
-  const role = profile.role.replace(/\s+/g, '');
   return [
-    `实习成长记录｜${md(from)}–${md(to)}`,
+    `实习成长记录｜${shortDate(from)}–${shortDate(to)}`,
     '',
     `作为${profile.role}${mentionCompany ? `（${profile.company}）` : ''}，这段时间我主要在做：`,
-    ...entries.slice(-5).map(e => `· ${firstLine(e.text)}`),
-    ...(top ? ['', `时间花得最多的是「${top[0]}」，共 ${fmtH(top[1])} 小时。`] : []),
+    ...lines,
+    ...(top ? ['', `花时间最多的是「${top[0]}」，共 ${fmtH(top[1])} 小时。`] : []),
     '',
     '这段时间最大的收获：（在这里写一句你自己的感受）',
     '',
-    `#实习 #成长记录 #${role}`,
+    `#实习 #成长记录 #${profile.role.replace(/\s+/g, '')}`,
   ].join('\n');
 }
 
-async function generatePost(btn) {
+async function generatePost(btn, paint) {
   const args = postArgs();
   if (!args.entries.length) return;
   if (!ai.hasKey()) {
     state.li.text = templatePost(args);
-    render();
+    paint();
     toast('已用模板生成，可以直接修改');
     return;
   }
   busy(btn, true);
   try {
     state.li.text = await ai.draftLinkedInPost(args);
-    render();
+    paint();
     toast('帖子写好了，发之前再读一遍');
   } catch (err) {
     console.error(err);
@@ -666,103 +1016,55 @@ async function generatePost(btn) {
   }
 }
 
-function openLinkedIn() {
-  const text = state.li.text.trim();
-  if (!text) return;
-  copyText(text);
-  window.open(`https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(text)}`, '_blank', 'noopener');
-  toast('帖子已复制。如果 LinkedIn 没有自动填好，直接粘贴即可', 4000);
-}
+const EXPORT_ACTIONS = {
+  'exp-range': (el, paint) => {
+    state.exp.range = el.dataset.v;
+    if (el.dataset.v === 'custom' && !state.exp.from) {
+      state.exp.from = addDays(todayStr(), -6);
+      state.exp.to = todayStr();
+    }
+    paint();
+  },
+  'exp-lang': (el, paint) => {
+    state.exp.lang = el.dataset.v;
+    paint();
+  },
+  export: el => doExport(el.dataset.fmt, el),
+  'li-lang': (el, paint) => {
+    state.li.lang = el.dataset.v;
+    paint();
+  },
+  'li-generate': (el, paint) => generatePost(el, paint),
+  'li-open': () => {
+    const text = state.li.text.trim();
+    if (!text) return;
+    copyText(text);
+    window.open(`https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+    toast('帖子已复制。如果 LinkedIn 没有自动填好，直接粘贴即可', 4000);
+  },
+  'li-prompt': async () => {
+    const args = postArgs();
+    if (!args.entries.length) return;
+    await copyText(ai.linkedInPromptText(args));
+    toast('提示词已复制，粘贴到任意 AI 助手里就能生成帖子', 4000);
+  },
+};
 
-/* Settings */
+const EXPORT_CHANGES = {
+  'exp-from': (el, paint) => { state.exp.from = el.value; paint(); },
+  'exp-to': (el, paint) => { state.exp.to = el.value; paint(); },
+  'exp-opt': el => { state.exp[el.dataset.key] = el.checked; },
+  'li-company': el => { state.li.mentionCompany = el.checked; },
+};
 
-function viewSettings() {
-  const p = state.profile;
-  const s = state.settings;
-  const cfg = ai.config();
-  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
-  const notifyLabel = { granted: '浏览器通知已开启', denied: '通知被浏览器拒绝了', unsupported: '这个浏览器不支持通知' }[perm] || '开启浏览器通知';
-  const lastBackup = store.get('lastBackup');
-  return `
-    <h1 class="page-title">我的</h1>
-    <form class="card" data-form="profile">
-      <div class="card-head"><h2>我的实习</h2></div>
-      ${profileFields(p)}
-      <button class="btn primary block" type="submit">保存</button>
-    </form>
-
-    <section class="card">
-      <div class="card-head"><h2>每日提醒</h2></div>
-      <label class="field row"><span>提醒时间</span><input type="time" data-change="reminder-time" value="${s.reminderTime}"></label>
-      <label class="switch"><input type="checkbox" data-change="skip-weekends" ${s.skipWeekends ? 'checked' : ''}><span>周末不写不算断签（日历只在工作日提醒）</span></label>
-      <div class="btn-row">
-        <button class="btn primary" data-act="download-ics">添加到手机日历</button>
-        <button class="btn" data-act="enable-notify" ${perm === 'default' ? '' : 'disabled'}>${notifyLabel}</button>
-      </div>
-      <p class="hint">网页 App 关掉以后没法自己弹提醒。最稳的是「添加到手机日历」，每天到点由日历提醒你；改了提醒时间要重新添加一次。浏览器通知只在 App 开着时有效。</p>
-    </section>
-
-    <section class="card">
-      <div class="card-head"><h2>时间复盘类别</h2></div>
-      <div class="chips">${s.categories.map(c => `<span class="chip"><span class="dot" style="background:${catColor(c)}"></span>${escapeHtml(c)}<button data-act="cat-del" data-cat="${escapeHtml(c)}" aria-label="删除类别 ${escapeHtml(c)}">${ICON.x}</button></span>`).join('')}</div>
-      <form class="inline-form" data-form="add-cat">
-        <input name="name" maxlength="10" placeholder="添加类别，比如：跑实验" autocomplete="off">
-        <button class="btn" type="submit">添加</button>
-      </form>
-    </section>
-
-    <form class="card" data-form="ai">
-      <div class="card-head"><h2>AI 翻译与帖子（可选）</h2></div>
-      <p class="muted small" style="margin-bottom:12px">用来把日记翻译成英文、生成 LinkedIn 帖子。需要你自己的 Claude API Key（在 console.anthropic.com 创建，按用量付费）。</p>
-      <label class="field"><span>Claude API Key</span><input name="apiKey" type="password" autocomplete="off" placeholder="sk-ant-…" value="${escapeHtml(cfg.apiKey || '')}"></label>
-      <label class="field"><span>模型</span><select name="model">${ai.MODELS.map(m => `<option value="${m.id}" ${m.id === (cfg.model || ai.DEFAULT_MODEL) ? 'selected' : ''}>${m.label}</option>`).join('')}</select></label>
-      <div class="btn-row">
-        <button class="btn primary" type="submit">保存</button>
-        <button class="btn" type="button" data-act="test-ai">测试连接</button>
-      </div>
-      <p class="hint">Key 只存在这台设备上，不会写进备份文件。只有你点「翻译」或「生成」时，选中范围内的日记才会发给 Anthropic。</p>
-    </form>
-
-    <section class="card">
-      <div class="card-head"><h2>数据</h2></div>
-      <p class="muted small">日记只保存在这台设备的浏览器里。换手机、清理浏览器数据之前，先导出备份。${lastBackup ? `上次备份：${lastBackup}。` : '还没有备份过。'}</p>
-      <div class="btn-row">
-        <button class="btn" data-act="backup-export">导出备份</button>
-        <label class="btn">从备份恢复<input type="file" accept="application/json,.json" data-change="backup-import" hidden></label>
-      </div>
-      <button class="btn danger block" data-act="clear-all">清空全部数据</button>
-    </section>
-    <p class="muted small center">实习成长日记 v1.0</p>`;
-}
-
-/* ---------- Modal ---------- */
-
-function openModal(html, onMount) {
-  const wrap = document.createElement('div');
-  wrap.className = 'modal';
-  wrap.innerHTML = `<div class="modal-backdrop" data-modal-close></div><div class="modal-sheet" role="dialog" aria-modal="true">${html}</div>`;
-  $('#modal-root').appendChild(wrap);
-  document.body.classList.add('modal-open');
-  const onKey = ev => { if (ev.key === 'Escape') close(); };
-  function close() {
-    wrap.remove();
-    document.removeEventListener('keydown', onKey);
-    if (!$('#modal-root').children.length) document.body.classList.remove('modal-open');
-  }
-  document.addEventListener('keydown', onKey);
-  wrap.addEventListener('click', ev => { if (ev.target.closest('[data-modal-close]')) close(); });
-  onMount?.($('.modal-sheet', wrap), close);
-  return close;
-}
-
-/* ---------- Actions ---------- */
+/* ---------- Actions on the pages ---------- */
 
 async function saveDiary() {
   const ta = $('#diary-text');
   if (!ta) return;
-  const text = ta.value.replace(/\s+$/, '');
-  if (!text.trim()) {
-    toast('写一句话再保存吧');
+  const text = ta.value.trim();
+  if (!text) {
+    toast('先写一句再记下');
     return;
   }
   const date = ta.dataset.date;
@@ -777,24 +1079,8 @@ async function saveDiary() {
   const after = streak();
   const newly = THEMES.filter(t => t.unlock > 0 && before.longest < t.unlock && after.longest >= t.unlock);
   render();
-  if (!wasWritten && date === todayStr()) {
-    openPoster(date, { celebrate: true, newly });
-  } else {
-    toast(newly.length ? `解锁新海报主题：${newly.map(t => t.name).join('、')}` : wasWritten ? '日记已更新' : '补写成功');
-  }
-}
-
-async function changeTime(cat, delta) {
-  const e = ensureEntry(state.date);
-  const v = Math.max(0, Math.round(((e.time[cat] || 0) + delta) * 2) / 2);
-  if (delta > 0 && sumTime(e.time) + delta > 24) {
-    toast('一天最多 24 小时');
-    return;
-  }
-  if (v) e.time[cat] = v;
-  else delete e.time[cat];
-  await persist(e);
-  render();
+  if (!wasWritten) celebrateDiary(date, newly);
+  else toast('已更新');
 }
 
 const ACTIONS = {
@@ -814,7 +1100,29 @@ const ACTIONS = {
     state.followToday = true;
     render();
   },
-  goto: el => go(el.dataset.view),
+  'open-add': openAdd,
+  'todo-check': async el => {
+    const e = ensureEntry(state.date);
+    const t = e.todos.find(x => x.id === el.dataset.id);
+    if (!t) return;
+    if (!t.done) {
+      // Sound first, inside the tap, so the browser lets it play.
+      chime();
+      navigator.vibrate?.(12);
+      t.done = true;
+      t.doneAt = Date.now();
+      await persist(e);
+      render();
+      askDuration(state.date, t.id);
+    } else {
+      t.done = false;
+      delete t.minutes;
+      delete t.doneAt;
+      await persist(e);
+      render();
+    }
+  },
+  'todo-duration': el => askDuration(state.date, el.dataset.id),
   'todo-del': async el => {
     const e = ensureEntry(state.date);
     e.todos = e.todos.filter(t => t.id !== el.dataset.id);
@@ -827,67 +1135,20 @@ const ACTIONS = {
     await persist(e);
     render();
   },
-  'img-del': async el => {
-    if (!confirm('删除这张图片？')) return;
-    const id = el.dataset.id;
-    const e = ensureEntry(state.date);
-    e.images = e.images.filter(x => x !== id);
-    await persist(e);
-    await db.deleteImage(id);
-    imageCache.delete(id);
-    render();
-  },
-  'view-img': async el => {
-    const img = await loadImage(el.dataset.id);
-    if (img) openModal(`<img class="full-img" src="${img.data}" alt="日记图片"><div class="btn-row"><button class="btn" data-modal-close>关闭</button></div>`);
-  },
   'save-diary': saveDiary,
-  'time-inc': el => changeTime(el.dataset.cat, 0.5),
-  'time-dec': el => changeTime(el.dataset.cat, -0.5),
-  'open-poster': el => openPoster(el.dataset.date),
-  'open-day': el => {
-    state.date = el.dataset.date;
-    state.followToday = state.date === todayStr();
-    go('today');
-  },
-  'cal-prev': () => {
-    state.calMonth = shiftMonth(state.calMonth, -1);
+  'edit-diary': el => editDiary(el.dataset.date),
+  share: el => openShare(el.dataset.kind),
+  'open-export': openExport,
+  'plaza-release': openReleasePicker,
+  'plaza-fish': el => fishBoat(el),
+  'plaza-retry': () => {
+    state.plaza.error = '';
     render();
+    refreshPlaza();
   },
-  'cal-next': () => {
-    state.calMonth = shiftMonth(state.calMonth, 1);
-    render();
-  },
-  'pick-theme': async el => {
-    state.settings.posterTheme = el.dataset.id;
-    await saveSettings();
-    render();
-  },
-  'exp-range': el => {
-    state.exp.range = el.dataset.v;
-    if (el.dataset.v === 'custom' && !state.exp.from) {
-      state.exp.from = addDays(todayStr(), -6);
-      state.exp.to = todayStr();
-    }
-    render();
-  },
-  'exp-lang': el => {
-    state.exp.lang = el.dataset.v;
-    render();
-  },
-  export: el => doExport(el.dataset.fmt, el),
-  'li-lang': el => {
-    state.li.lang = el.dataset.v;
-    render();
-  },
-  'li-generate': el => generatePost(el),
-  'li-open': openLinkedIn,
-  'li-prompt': async () => {
-    const args = postArgs();
-    if (!args.entries.length) return;
-    await copyText(ai.linkedInPromptText(args));
-    toast('提示词已复制，粘贴到任意 AI 助手里就能生成帖子', 4000);
-  },
+  'open-caught': el => openThread(el.dataset.boat, el.dataset.other),
+  'open-mine': el => openMine(el.dataset.boat),
+  'open-thread': el => openThread(el.dataset.boat, el.dataset.other),
   'download-ics': () => {
     const url = location.href.split(/[?#]/)[0];
     const ics = buildICS({ time: state.settings.reminderTime, weekdaysOnly: state.settings.skipWeekends, url });
@@ -898,16 +1159,6 @@ const ACTIONS = {
     if (!('Notification' in window)) return;
     const result = await Notification.requestPermission();
     toast(result === 'granted' ? '已开启，App 开着时到点会提醒你' : '没有开启通知');
-    render();
-  },
-  'cat-del': async el => {
-    const c = el.dataset.cat;
-    if (state.settings.categories.length <= 1) {
-      toast('至少保留一个类别');
-      return;
-    }
-    state.settings.categories = state.settings.categories.filter(x => x !== c);
-    await saveSettings();
     render();
   },
   'test-ai': async el => {
@@ -926,65 +1177,37 @@ const ACTIONS = {
   },
   'backup-export': async () => {
     const [entries, images] = await Promise.all([db.allEntries(), db.allImages()]);
-    const data = { app: 'intern-diary', version: 1, exportedAt: new Date().toISOString(), profile: state.profile, settings: state.settings, entries, images };
+    const data = { app: 'intern-diary', version: 2, exportedAt: new Date().toISOString(), profile: state.profile, settings: state.settings, entries, images };
     downloadBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), `实习日记备份_${todayStr()}.json`);
     store.set('lastBackup', todayStr());
     render();
   },
   'clear-all': async () => {
-    if (!confirm('确定清空全部日记、图片和设置（包括 API Key）吗？')) return;
+    if (!confirm('确定清空这台设备上的全部待办、日记和设置（包括 API Key）吗？')) return;
     if (!confirm('清空后无法恢复。建议先「导出备份」。真的要清空吗？')) return;
     await db.clearAll();
-    Object.keys(localStorage).filter(k => k.startsWith('draft:')).forEach(k => store.del(k));
-    ['lastBackup', 'notified', 'en-labels', 'ai'].forEach(k => store.del(k));
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('draft:') || k.startsWith('sb-'))
+      .forEach(k => store.del(k));
+    ['lastBackup', 'notified', 'en-labels', 'ai', 'plaza-used'].forEach(k => store.del(k));
+    plaza.resetDemo();
     state.profile = null;
     state.entries.clear();
     imageCache.clear();
     state.settings = { ...DEFAULT_SETTINGS };
-    state.view = 'today';
+    state.plaza = { loaded: false, loading: false, error: '', stats: null, mine: [], caught: [], inbox: [] };
+    state.view = 'todo';
     render();
     toast('已清空');
   },
 };
 
 const CHANGES = {
-  'todo-toggle': async el => {
-    const e = ensureEntry(state.date);
-    const t = e.todos.find(x => x.id === el.dataset.id);
-    if (!t) return;
-    t.done = el.checked;
-    await persist(e);
+  'boat-company': async el => {
+    state.settings.boatShowCompany = el.checked;
+    await saveSettings();
     render();
   },
-  'add-images': async el => {
-    const files = [...el.files];
-    el.value = '';
-    const e = ensureEntry(state.date);
-    const room = MAX_IMAGES - e.images.length;
-    if (files.length > room) toast(`每天最多 ${MAX_IMAGES} 张，只添加了前 ${room} 张`);
-    for (const f of files.slice(0, room)) {
-      try {
-        const img = { id: uid(), ...(await compressImage(f)) };
-        await db.putImage(img);
-        imageCache.set(img.id, img);
-        e.images.push(img.id);
-      } catch {
-        toast('有一张图片读不出来，换一张试试');
-      }
-    }
-    await persist(e);
-    render();
-  },
-  'exp-from': el => {
-    state.exp.from = el.value;
-    render();
-  },
-  'exp-to': el => {
-    state.exp.to = el.value;
-    render();
-  },
-  'exp-opt': el => { state.exp[el.dataset.key] = el.checked; },
-  'li-company': el => { state.li.mentionCompany = el.checked; },
   'reminder-time': async el => {
     state.settings.reminderTime = el.value || '21:00';
     await saveSettings();
@@ -1007,13 +1230,13 @@ const CHANGES = {
       return;
     }
     const prompt = state.profile
-      ? `备份里有 ${data.entries.length} 天的记录。恢复会覆盖这台设备上现在的全部日记，确定吗？`
+      ? `备份里有 ${data.entries.length} 天的记录。恢复会覆盖这台设备上现在的全部记录，确定吗？`
       : `从备份恢复 ${data.entries.length} 天的记录？`;
     if (!confirm(prompt)) return;
     await db.restore(data);
     imageCache.clear();
     await boot();
-    toast('恢复完成');
+    toast('已从备份恢复');
   },
 };
 
@@ -1022,7 +1245,7 @@ const FORMS = {
     const d = Object.fromEntries(new FormData(form));
     const p = { company: d.company.trim(), department: d.department.trim(), role: d.role.trim(), startDate: d.startDate };
     if (!p.company || !p.role || !p.startDate) {
-      toast('公司、岗位名称和入职日期都要填');
+      toast('请填写公司、岗位名称和入职日期');
       return;
     }
     const first = !state.profile;
@@ -1030,38 +1253,14 @@ const FORMS = {
     await db.setKV('profile', p);
     if (first) {
       await saveSettings();
-      state.view = 'today';
+      state.view = 'todo';
       render();
       window.scrollTo(0, 0);
-      toast('设置好了，写下今天的第一篇吧');
+      toast('设置完成，先列一下今天的待办吧');
     } else {
       render();
       toast('已保存');
     }
-  },
-  'add-todo': async form => {
-    const text = form.elements.text.value.trim();
-    if (!text) return;
-    const e = ensureEntry(state.date);
-    e.todos.push({ id: uid(), text, done: false });
-    await persist(e);
-    render();
-    $('form[data-form="add-todo"] input')?.focus();
-  },
-  'add-cat': async form => {
-    const name = form.elements.name.value.trim();
-    if (!name) return;
-    if (state.settings.categories.includes(name)) {
-      toast('已经有这个类别了');
-      return;
-    }
-    if (state.settings.categories.length >= MAX_CATEGORIES) {
-      toast(`最多 ${MAX_CATEGORIES} 个类别`);
-      return;
-    }
-    state.settings.categories = [...state.settings.categories, name];
-    await saveSettings();
-    render();
   },
   ai: form => {
     const d = Object.fromEntries(new FormData(form));
@@ -1079,6 +1278,17 @@ app.addEventListener('click', ev => {
   ev.preventDefault();
   fn(el, ev);
 });
+// Boat cards are <article role="button">; let Enter and Space open them too.
+app.addEventListener('keydown', ev => {
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches('[role="button"][data-act]')) {
+    ev.preventDefault();
+    ev.target.click();
+  }
+  if (ev.target.id === 'diary-text' && ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    saveDiary();
+  }
+});
 app.addEventListener('change', ev => {
   const el = ev.target.closest('[data-change]');
   if (el) CHANGES[el.dataset.change]?.(el, ev);
@@ -1091,23 +1301,12 @@ app.addEventListener('submit', ev => {
 });
 app.addEventListener('input', ev => {
   const t = ev.target;
-  if (t.id === 'diary-text') {
-    autosize(t);
-    const changed = t.value !== entryOf(t.dataset.date).text;
-    $('#save-diary').disabled = !t.value.trim();
-    $('#draft-state').textContent = changed ? '有未保存的修改（草稿已自动保留）' : '';
-    writeDraftSoon(t.dataset.date, t.value);
-  } else if (t.id === 'li-text') {
-    state.li.text = t.value;
-    const btn = $('[data-act="li-open"]');
-    if (btn) btn.disabled = !t.value.trim();
-  }
-});
-app.addEventListener('keydown', ev => {
-  if (ev.target.id === 'diary-text' && ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-    ev.preventDefault();
-    saveDiary();
-  }
+  if (t.id !== 'diary-text') return;
+  autosize(t);
+  const changed = t.value !== entryOf(t.dataset.date).text;
+  $('#save-diary').disabled = !t.value.trim();
+  $('#draft-state').textContent = changed ? DRAFT_NOTE : '';
+  writeDraftSoon(t.dataset.date, t.value);
 });
 $('#tabbar').addEventListener('click', ev => {
   const b = ev.target.closest('[data-view]');
@@ -1123,10 +1322,14 @@ function syncToday() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') captureDraft();
-  else syncToday();
+  else {
+    syncToday();
+    refreshUnread();
+  }
 });
 window.addEventListener('pagehide', captureDraft);
 setInterval(syncToday, 60000);
+setInterval(refreshUnread, 60000);
 
 /* ---------- Boot ---------- */
 
@@ -1137,7 +1340,9 @@ async function boot() {
   state.entries = new Map(entries.map(e => [e.date, e]));
   state.date = todayStr();
   state.followToday = true;
+  if (!VIEWS[state.view]) state.view = 'todo';
   render();
+  refreshUnread();
 }
 
 boot().catch(err => {
